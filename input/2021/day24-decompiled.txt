@@ -1,0 +1,33 @@
+fn step(inp, z, b,mode,d) {
+    x = z % 26 + b //x = z.peek() + b
+    if mode = pop {
+        z /= 26;
+    }
+    if x != inp {
+        z *= 26
+        z += inp+d
+    }
+}
+mode in push,pop;
+
+step(I1, 0, 10, push, 13) //PUSH 13 + W
+ step(I2, z, 13, push, 10) //PUSH 10 + w
+  step(I3, z, 13, push, 3)) //PUSH 3 + w
+  step(I4, z, -11, pop, 1)) //I4 == (-8 + I3)
+  step(I5, z, 11, push, 9))
+  step(I6, z, -4, pop, 3)) //I6 == (5 + I5)
+   step(I7, z, 12, push, 5))
+    step(I8, z, 12, push, 1))
+     step(I9, z, 15, push, 0)) 
+     step(I10, z, -2, pop, 13)) //I10 == (-2 + I9) 
+    step(I11, z, -5, pop, 7)) //I11 == (-4 + I8) 
+   step(I12, z, -11, pop, 15)) //I12 == -6 + I7
+  step(I13, z, -13, pop, 12)) //I13 == -3 + I2
+ step(I14, z, -10, pop, 8)) //I14 == 3 + I1
+
+                 11111
+        12345678901234
+ //max: 999129......99
+
+ I9 - 2 == I10
+ I8 + 12 == I11
