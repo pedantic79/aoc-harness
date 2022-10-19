@@ -9,7 +9,7 @@ use std::{env, path::PathBuf, str::FromStr, time::Instant};
 use answers::AnswerAll;
 pub use aoc_harness_macros::*;
 pub use itertools::Itertools;
-use structopt::StructOpt;
+pub use structopt::StructOpt;
 
 #[derive(StructOpt, Debug)]
 pub struct Opts {

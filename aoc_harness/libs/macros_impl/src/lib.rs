@@ -386,8 +386,8 @@ impl AocMainInput {
             unimplemented!();
         } else {
             quote! {
-                use structopt::StructOpt;
-                use dotenv;
+                use ::aoc_harness::StructOpt;
+
                 #[cfg(test)]
                 mod autotests {
                     #[test]

@@ -18,7 +18,7 @@ impl<T1, T2> AnswerType for (T1, T2) {
 }
 
 macro_rules! impl_answer_type {
-    ($($t:ident) *) => {
+    ($($t:ty) *) => {
         $(
             impl AnswerType for $t {
                 type Output = Self;
@@ -30,4 +30,4 @@ macro_rules! impl_answer_type {
     };
 }
 
-impl_answer_type!(usize isize u128 i128 u64 i64 u32 i32 u16 i16 u8 i8 String);
+impl_answer_type!(usize isize u128 i128 u64 i64 u32 i32 u16 i16 u8 i8 String &str);
