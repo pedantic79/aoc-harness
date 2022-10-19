@@ -1,10 +1,6 @@
 [workspace]
-members = [
-    "utils",
-    "aoc_harness",
-    "aoc",
-    "aoc_latest"
-]
+members = ["aoc_harness"]
+
 [profile.release]
 debug = true
 overflow-checks = true
