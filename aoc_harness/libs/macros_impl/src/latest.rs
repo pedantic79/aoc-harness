@@ -19,11 +19,12 @@ impl Parse for FindLatestInput {
         })
     }
 }
+
 impl FindLatestInput {
     #[must_use]
     pub fn do_macro(&self) -> TokenStream {
-        let dir_q = format!("{}", self.dir);
-        let filename_part_q = format!("{}", self.filename_part);
+        let dir_q = self.dir.to_string();
+        let filename_part_q = self.filename_part.to_string();
         let filename_part = filename_part_q.trim_matches('"');
         let dir = dir_q.trim_matches('"');
         let path = PathBuf::from(dir).canonicalize().unwrap();
@@ -33,7 +34,7 @@ impl FindLatestInput {
             .filter(|x| {
                 if x.file_type().is_file() {
                     let file_name = x.file_name().to_string_lossy();
-                    file_name.ends_with(".rs") && file_name.contains(&filename_part)
+                    file_name.ends_with(".rs") && file_name.contains(filename_part)
                 } else {
                     false
                 }

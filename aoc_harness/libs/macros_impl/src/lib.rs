@@ -1,17 +1,14 @@
 use std::fmt::Display;
 
-use quote::quote;
-
 use proc_macro2::TokenStream;
-use syn::bracketed;
-use syn::parse::Parse;
-use syn::parse::ParseStream;
-use syn::parse_quote;
-use syn::punctuated::Punctuated;
-use syn::Expr;
-use syn::LitInt;
-use syn::Result;
-use syn::Token;
+use quote::quote;
+use syn::{
+    bracketed,
+    parse::{Parse, ParseStream},
+    parse_quote,
+    punctuated::Punctuated,
+    Expr, LitInt, Result, Token,
+};
 
 pub mod all;
 pub mod latest;
@@ -386,13 +383,11 @@ impl AocMainInput {
             unimplemented!();
         } else {
             quote! {
-                use ::aoc_harness::StructOpt;
-
                 #[cfg(test)]
                 mod autotests {
                     #[test]
                     fn full_solution() {
-                        let mut results = aoc_harness::dayresult::DayResult::new(#year,#day,file!());
+                        let mut results = ::aoc_harness::dayresult::DayResult::new(#year,#day,file!());
                         super::run_with_opts(&mut results, &mut aoc_harness::Opts::for_test());
                     }
                     #[test]
@@ -400,7 +395,7 @@ impl AocMainInput {
                         super::check_examples();
                     }
                 }
-                pub fn run_with_opts(results: &mut aoc_harness::dayresult::DayResult, opts: &mut aoc_harness::Opts) {
+                pub fn run_with_opts(results: &mut ::aoc_harness::dayresult::DayResult, opts: &mut ::aoc_harness::Opts) {
                     #setup
                     #solutions
                     opts.answers.record_dayresult(results).expect("Mismatched results");
@@ -409,9 +404,10 @@ impl AocMainInput {
 
                 #[allow(dead_code)]
                 pub fn run_main() -> aoc_harness::dayresult::DayResult {
-                    let mut opts = aoc_harness::Opts::from_args();
+                    use ::aoc_harness::StructOpt;
+                    let mut opts = ::aoc_harness::Opts::from_args();
                     check_examples();
-                    let mut results = aoc_harness::dayresult::DayResult::new(#year,#day,file!());
+                    let mut results = ::aoc_harness::dayresult::DayResult::new(#year,#day,file!());
                     for _ in 0..opts.repeats {
                         run_with_opts(&mut results, &mut opts);
                     }

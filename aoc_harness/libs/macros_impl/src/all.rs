@@ -20,6 +20,7 @@ impl Parse for AocAllMainInput {
         })
     }
 }
+
 impl AocAllMainInput {
     #[must_use]
     pub fn do_macro(&self) -> TokenStream {
@@ -52,10 +53,10 @@ impl AocAllMainInput {
         }
 
         quote! {
-            use dotenv;
+            use dotenvy;
             #mods
             pub fn main() {
-                dotenv::dotenv().ok();
+                dotenvy::dotenv().ok();
                 let mut times = Vec::new();
                 #inner
 
