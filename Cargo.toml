@@ -1,21 +1,14 @@
-[workspace]
-members = ["aoc_harness"]
+[package]
+name = "aoc_harness"
+version = "0.1.0"
+edition = "2021"
 
-[profile.release]
-debug = true
-overflow-checks = true
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[profile.dev]
-debug = true
-overflow-checks = true
-
-# [profile.release-lto]
-# inherits = "release"
-# debug = false
-# overflow-checks = false
-# lto = true
-
-# [profile.release-nocheck]
-# inherits = "release"
-# debug = false
-# overflow-checks = false
+[dependencies]
+structopt = "0.3"
+itertools = "0.10.1"
+ureq = "2.3.1"
+aoc_harness_macros = { path = "libs/macros" }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
