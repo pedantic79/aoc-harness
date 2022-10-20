@@ -356,6 +356,7 @@ impl AocMainInput {
         };
         match self.gen.as_ref().map(|z| &z.gen_fn) {
             Some(g) => setup.extend(quote! {
+                let s = s.trim_end();
                 let (t, generated) = opts.time_fn(||#g(&s));
                 results.record_generator(t);
                 opts.log(||format!("Year {} Day {} generated in {}", #year, #day, aoc_harness::render_duration(t)));
