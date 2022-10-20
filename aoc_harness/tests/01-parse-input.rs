@@ -1,13 +1,13 @@
 fn gen_fn(input: &str) -> Vec<u32> {
     input.lines().map(|x| x.parse().unwrap()).collect()
 }
-fn part1a(x: &Vec<u32>) -> u32 {
+fn part1a(x: &[u32]) -> u32 {
     x.iter().sum()
 }
-fn part1b(x: &Vec<u32>) -> u32 {
+fn part1b(x: &[u32]) -> u32 {
     x.len() as u32
 }
-fn part2a(_x: &Vec<u32>) -> String {
+fn part2a(_x: &[u32]) -> String {
     "answer".to_string()
 }
 mod full {
