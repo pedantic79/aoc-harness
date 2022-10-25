@@ -34,6 +34,15 @@ mod no_gen {
 fn main() {
     full::run_main();
     no_gen::run_main();
+
+    {
+        #[aoc_harness::if_file_exist("/Users/dnn/aoc-harness/Cargo.toml")]
+        fn b() {
+            println!("Hello World");
+        }
+
+        b();
+    }
 }
 
 // We want to say something like:
