@@ -1,5 +1,4 @@
 //Convenience re-exports
-
 pub mod answers;
 pub mod answertype;
 pub mod dayresult;
@@ -8,17 +7,18 @@ use std::{env, path::PathBuf, str::FromStr, time::Instant};
 
 use answers::AnswerAll;
 pub use aoc_harness_macros::*;
-pub use itertools::Itertools;
-pub use structopt::StructOpt;
-
-#[derive(StructOpt, Debug)]
+pub mod internal {
+    pub use itertools::Itertools;
+    pub use structopt::StructOpt;
+}
+#[derive(internal::StructOpt, Debug)]
 pub struct Opts {
     /// Override the input with the contents of this file
     #[structopt(short, long)]
     pub input: Option<PathBuf>,
     #[structopt(short, long)]
     pub quiet: bool,
-    ///panic if results don't match expected.
+    /// panic if results don't match expected.
     #[structopt(short, long)]
     pub test_mode: bool,
     #[structopt(short, long, default_value = "1")]
@@ -55,11 +55,13 @@ impl Opts {
             answers: AnswerAll::blank(),
         }
     }
+
     pub fn log<F: FnOnce() -> String>(&self, f: F) {
         if !self.quiet {
             println!("{}", f());
         }
     }
+
     pub fn assert_eq<T1, T2>(&self, actual: &T1, expected: &T2)
     where
         T1: std::fmt::Debug + PartialEq<T2>,
@@ -76,6 +78,7 @@ impl Opts {
             });
         }
     }
+
     #[must_use]
     pub fn get_input(&self, year: i32, day: u8) -> String {
         match &self.input {
@@ -118,6 +121,7 @@ impl Opts {
                 .replace('\r', ""),
         }
     }
+
     pub fn time_fn<O, F>(&self, f: F) -> (std::time::Duration, O)
     where
         F: Fn() -> O,
@@ -169,6 +173,7 @@ where
 {
     i.parse().unwrap()
 }
+
 #[must_use]
 pub fn lines<O>(i: &str) -> Vec<O>
 where
@@ -177,6 +182,7 @@ where
 {
     i.trim().lines().map(|x| x.parse().unwrap()).collect()
 }
+
 #[must_use]
 pub fn input<O, const S: char>(i: &str) -> Vec<O>
 where

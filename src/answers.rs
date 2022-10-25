@@ -17,6 +17,7 @@ pub type AnswerYear = BTreeMap<u8, Answer>;
 pub struct AnswerAll {
     data: BTreeMap<i32, AnswerYear>,
 }
+
 impl AnswerAll {
     #[must_use]
     pub fn from_file() -> Self {

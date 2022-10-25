@@ -3,7 +3,8 @@ name = "aoc_harness"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[workspace]
+members = ["libs/macros", "libs/macros_impl"]
 
 [dependencies]
 structopt = "0.3"

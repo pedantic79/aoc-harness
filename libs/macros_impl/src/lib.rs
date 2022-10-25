@@ -405,7 +405,7 @@ impl AocMainInput {
 
                 #[allow(dead_code)]
                 pub fn run_main() -> aoc_harness::dayresult::DayResult {
-                    use ::aoc_harness::StructOpt;
+                    use ::aoc_harness::internal::StructOpt;
                     let mut opts = ::aoc_harness::Opts::from_args();
                     check_examples();
                     let mut results = ::aoc_harness::dayresult::DayResult::new(#year,#day,file!());

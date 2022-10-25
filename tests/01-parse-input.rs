@@ -1,20 +1,25 @@
 fn gen_fn(input: &str) -> Vec<u32> {
     input.lines().map(|x| x.parse().unwrap()).collect()
 }
+
 fn part1a(x: &[u32]) -> u32 {
     x.iter().sum()
 }
+
 fn part1b(x: &[u32]) -> u32 {
     x.len() as u32
 }
+
 fn part2a(_x: &[u32]) -> String {
     "answer".to_string()
 }
+
 mod full {
     use super::*;
     use aoc_harness_macros::aoc_main;
     aoc_main!(2021 day 1, generator gen_fn, part1 [part1a, part1b] => 42, part2 [part2a]);
 }
+
 mod no_gen {
     use aoc_harness_macros::aoc_main;
     fn p1(input: &str) -> usize {
@@ -25,6 +30,7 @@ mod no_gen {
     }
     aoc_main!(2021 day 2, part1 [p1] => 42, part2 [p2] => "answer");
 }
+
 fn main() {
     full::run_main();
     no_gen::run_main();
