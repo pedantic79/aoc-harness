@@ -81,6 +81,7 @@ impl Opts {
 
     #[must_use]
     pub fn get_input(&self, year: i32, day: u8) -> String {
+        dotenvy::dotenv().ok();
         match &self.input {
             None => {
                 //try in cache dir first.
