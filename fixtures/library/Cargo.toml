@@ -1,0 +1,19 @@
+[package]
+name = "winter-library"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "holiday_solutions"
+
+[dependencies]
+aoc-harness = { path = "../../crates/aoc-harness" }
+
+[features]
+bonus = []
+
+[profile.quick]
+inherits = "dev"
+opt-level = 1
+
+[workspace]
