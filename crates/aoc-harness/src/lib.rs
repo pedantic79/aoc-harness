@@ -323,12 +323,18 @@ impl Registry {
         }
         let elapsed = start.elapsed();
 
+        println!("AOC {}\n", self.year);
         for (solution, result) in results {
+            let variant = if solution.named {
+                format!(" - {}", solution.name)
+            } else {
+                String::new()
+            };
             println!(
-                "Day {} part {} [{}]: {} | generator {:?} | solver {:?}",
+                "Day {} - Part {}{}: {}\n\tgenerator: {:?},\n\trunner: {:?}\n",
                 solution.day,
                 solution.part,
-                solution.name,
+                variant,
                 result.answer,
                 result.generator,
                 result.solver
@@ -342,7 +348,7 @@ impl Registry {
         } else {
             "Full run"
         };
-        println!("Generator total: {generator:?}\nSolver total: {solver:?}\n{status} ({scope}, {} selected): {elapsed:?}", selected.len());
+        println!("{status} ({scope}, {} selected):\n\tgenerator: {generator:?},\n\trunner: {solver:?},\n\ttotal: {elapsed:?}", selected.len());
 
         match failure {
             Some(error) => Err(error),

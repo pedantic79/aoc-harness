@@ -132,11 +132,13 @@ fn installed_library_workflow() {
 
     let output = success(run(&["--profile", "dev"]));
 
-    assert!(output.contains("Day 1 part 1 [default]: 6"));
-    assert!(output.contains("Day 1 part 2 [owned]: 12"));
-    assert!(output.contains("Day 3 part 2 [default]: 2"));
-    assert!(output.contains("Full run (2025, 6 selected)"));
-    assert!(output.contains("generator 0ns"));
+    assert!(output.starts_with("AOC 2025\n\nDay 1 - Part 1: 6\n\tgenerator: "));
+    assert!(output.contains("\n\trunner: "));
+    assert!(output.contains("\n\nDay 1 - Part 2 - owned: 12\n\tgenerator: "));
+    assert!(output.contains("Day 3 - Part 2: 2"));
+    assert!(output.contains("Full run (2025, 6 selected):\n\tgenerator: "));
+    assert!(output.contains("\n\ttotal: "));
+    assert!(output.contains("generator: 0ns"));
 
     let standalone = success(run(&["list", "--profile", "dev"]));
     let cargo = success(invoke(
@@ -163,7 +165,7 @@ fn installed_library_workflow() {
         "quick",
     ]));
 
-    assert!(output.contains("[mutable]: 306"));
+    assert!(output.contains("Day 1 - Part 2 - mutable: 306"));
     let output = success(run(&[
         "run",
         "--day",
@@ -190,7 +192,7 @@ fn installed_library_workflow() {
         "dev",
     ]));
 
-    assert!(output.contains("[default]: 4"));
+    assert!(output.contains("Day 3 - Part 1: 4"));
     let output = success(run(&[
         "list",
         "--all-features",
@@ -317,7 +319,7 @@ fn installed_library_workflow() {
         "dev",
     ]));
 
-    assert!(output.contains("[default]: 7"), "{output}");
+    assert!(output.contains("Day 2 - Part 1: 7"), "{output}");
     fs::write(&input, "bad-number").unwrap();
     failure(
         run(&[
@@ -379,7 +381,10 @@ fn installed_library_workflow() {
         "dev",
     ]));
 
-    assert!(output.contains("[default]: 13"), "stale bridge: {output}");
+    assert!(
+        output.contains("Day 1 - Part 1: 13"),
+        "stale bridge: {output}"
+    );
     fs::write(&source, format!("{original}\ninvalid Rust syntax\n")).unwrap();
     failure(run(&["list", "--profile", "dev"]), "could not compile");
 

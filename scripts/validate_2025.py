@@ -37,7 +37,7 @@ def main():
         inputs.symlink_to(source / "input", target_is_directory=True)
 
     manifest = (source / "Cargo.toml").read_text()
-    manifest = re.sub(r"^aoc-runner(?:-derive)?\s*=.*\n", "", manifest, flags=re.M)
+    manifest = re.sub(r"^(?:aoc-runner(?:-derive)?|aoc-harness)\s*=.*\n", "", manifest, flags=re.M)
     runtime = json.dumps(str(root / "crates/aoc-harness"))
     manifest = manifest.replace("[dependencies]", f"[dependencies]\naoc-harness = {{ path = {runtime} }}")
     (destination / "Cargo.toml").write_text(manifest + "\n[workspace]\n")
@@ -74,10 +74,10 @@ def main():
     output = subprocess.check_output([str(cli), "run", *common], text=True)
     (destination / "run.stdout.log").write_text(output)
     for line in output.splitlines():
-        if re.match(r"(?:Day \d+ part|Generator total:|Solver total:|Full run)", line):
+        if not line or re.match(r"(?:AOC \d+|Day \d+ - Part|\t(?:generator|runner|total):|Full run)", line):
             print(line)
     actual = {(int(day), int(part)): answer for day, part, answer in
-              re.findall(r"Day (\d+) part (\d+) \[default\]: (\d+)", output)}
+              re.findall(r"^Day (\d+) - Part (\d+): (\d+)$", output, flags=re.M)}
     assert actual == expected, f"answer mismatch:\nexpected {expected}\nactual {actual}"
 
     subprocess.run([str(cli), "bench", "--day", "4", "--part", "2", "--smoke", *common], check=True)

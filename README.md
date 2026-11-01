@@ -35,6 +35,30 @@ override. Neither executable source nor benchmark source belongs in the consumer
 The example's normal answers are `6`, `12`, `5`, `5`, `2`, `2`. The named mutable
 variant returns `306`; its generator is more specific than the part override.
 
+Run output follows cargo-aoc's familiar layout. For example, `run --day 1`
+produces the following structure (timings vary):
+
+```text
+AOC 2025
+
+Day 1 - Part 1: 6
+        generator: 8µs,
+        runner: 150ns
+
+Day 1 - Part 2 - owned: 12
+        generator: 7µs,
+        runner: 150ns
+
+Full run (2025 day 1, 2 selected):
+        generator: 15µs,
+        runner: 300ns,
+        total: 16µs
+```
+
+`runner` means the solver call. The footer's generator and runner values are
+totals; `total` is the elapsed full run. Unnamed solutions omit the variant label,
+and named solutions retain their names even when selected as defaults.
+
 ## Create a consumer
 
 Create a library with `cargo new --lib my-solutions`, and add the runtime as a
