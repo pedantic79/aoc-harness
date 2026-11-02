@@ -144,11 +144,12 @@ an explicit default. Duplicate identities, duplicate generators, and conflicting
 defaults fail compilation. `list` shows all variants and marks the selected
 defaults. Solutions execute sequentially in day/part/name order.
 
-`run` defaults to the highest registered day, including registrations enabled by
-features. Use `--day 1,3` (also `--days 1,3`) or repeat `--day 1 --day 3` to select
-multiple days. Repeated days run once, in day order. `--all-days` runs every
-registered day and cannot be combined with `--day`. `list` and `bench` continue
-to select every day by default and accept the same explicit day options.
+`run` and `bench` default to the highest registered day, including registrations
+enabled by features. Use `--day 1,3` (also `--days 1,3`) or repeat
+`--day 1 --day 3` to select multiple days. Repeated days run once, in day order.
+`--all-days` selects every registered day and cannot be combined with `--day`.
+`list` continues to select every day by default and accepts the same explicit day
+options.
 
 ```sh
 aoc-harness run --all-days
@@ -248,6 +249,7 @@ validated once; a subsequent measurement-loop error aborts the process.
 aoc-harness bench --day 4 --part 2 --solution flood_fill
 aoc-harness bench --filter '^solver/' --sample-size 20 \
   --warm-up-time 0.1 --measurement-time 0.2
+aoc-harness bench --all-days
 aoc-harness bench --smoke
 ```
 
@@ -256,16 +258,18 @@ positive seconds. Smoke mode executes each matching family once without
 statistical measurement or report generation. It is separate from a real
 shortened Criterion run, which exercises the batched measurement loops.
 
-The CLI shows one updating progress line in a terminal, then prints the benchmark
-results together after measurement finishes. Redirected output contains one
-`Running benchmarks...` notice and the final results, without Criterion's
+In a terminal, the CLI shows one updating progress line with the benchmark's name
+and phase, such as `Benchmark generator/day12/default: measuring...`. Each score
+prints as soon as it is available, with the progress line cleared first so
+progress messages do not remain between scores. Redirected output contains one
+`Running benchmarks...` notice and streamed results, without Criterion's
 per-benchmark warmup, sampling, and analysis messages. Warnings and errors are
-forwarded immediately. If a benchmark fails, captured output is still shown and
-the command exits unsuccessfully. Smoke mode continues to list the families it
-checks.
+forwarded immediately. If a benchmark fails, completed output remains visible,
+the output is marked incomplete, and the command exits unsuccessfully. Smoke
+mode continues to list the families it checks.
 
-Benchmark results use Criterion's colors when stdout is a terminal, even though
-results are collected before printing. Redirected output stays plain by default.
+Benchmark results use Criterion's colors when stdout is a terminal. Redirected
+output stays plain by default.
 Use `--color always` to preserve colors through a pipe or `--color never` to
 disable them. Automatic color respects `NO_COLOR` and `TERM=dumb`; an explicit
 color choice takes precedence.

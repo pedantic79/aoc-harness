@@ -4,9 +4,11 @@ use std::{
     collections::hash_map::DefaultHasher,
     ffi::OsString,
     hash::{Hash, Hasher},
-    io::{self, BufRead, BufReader, IsTerminal, Seek, SeekFrom, Write},
+    io::{self, BufRead, BufReader, IsTerminal, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::mpsc::{self, SyncSender},
+    thread,
 };
 
 mod help;
@@ -184,7 +186,7 @@ fn measured_bench(args: &[OsString]) -> bool {
     mode.action == Some("bench") && !mode.smoke
 }
 
-fn benchmark_status(line: &[u8]) -> Option<(&str, bool)> {
+fn benchmark_status(line: &[u8]) -> Option<(&str, &str)> {
     let text = std::str::from_utf8(line)
         .ok()?
         .trim_end_matches(['\r', '\n']);
@@ -197,14 +199,14 @@ fn benchmark_status(line: &[u8]) -> Option<(&str, bool)> {
     }
 
     match text.split_once(": ") {
-        None => Some(("starting", true)),
-        Some((_, phase)) if phase.starts_with("Warming up for ") => Some(("warming up", false)),
-        Some((_, phase))
+        None => Some((text, "starting")),
+        Some((name, phase)) if phase.starts_with("Warming up for ") => Some((name, "warming up")),
+        Some((name, phase))
             if phase.starts_with("Collecting ") && phase.contains(" samples in estimated ") =>
         {
-            Some(("measuring", false))
+            Some((name, "measuring"))
         }
-        Some((_, "Analyzing")) => Some(("analyzing", false)),
+        Some((name, "Analyzing")) => Some((name, "analyzing")),
         _ => None,
     }
 }
@@ -217,88 +219,147 @@ fn color_enabled(choice: ColorChoice, terminal: bool, no_color: bool, dumb_termi
     }
 }
 
-fn run_benchmarks(command: &mut Command) -> Result<i32, String> {
-    // Keep potentially large consumer output on disk, outside the measurement process.
-    let mut output =
-        tempfile::tempfile().map_err(|e| format!("create benchmark output file: {e}"))?;
-    let destination = output
-        .try_clone()
-        .map_err(|e| format!("clone benchmark output file: {e}"))?;
-    let mut child = command
-        .stdout(Stdio::from(destination))
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("run generated benchmark bridge: {e}"))?;
-    let mut progress = io::stderr();
-    let terminal =
-        progress.is_terminal() && std::env::var_os("TERM").is_none_or(|term| term != "dumb");
-    let mut benchmarks = 0;
-    let mut line = Vec::new();
-    let mut diagnostics = BufReader::new(child.stderr.take().unwrap());
+enum BenchmarkEvent {
+    Output(Vec<u8>),
+    Diagnostic(Vec<u8>),
+    ReadError(io::Error),
+}
+
+fn read_benchmark_stream(
+    stream: impl Read,
+    events: SyncSender<BenchmarkEvent>,
+    event: fn(Vec<u8>) -> BenchmarkEvent,
+) {
+    let mut stream = BufReader::new(stream);
+
+    loop {
+        let mut line = Vec::new();
+        match stream.read_until(b'\n', &mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                if events.send(event(line)).is_err() {
+                    break;
+                }
+            }
+            Err(error) => {
+                let _ = events.send(BenchmarkEvent::ReadError(error));
+                break;
+            }
+        }
+    }
+}
+
+fn clear_benchmark_progress(progress: &mut impl Write) -> io::Result<()> {
+    write!(progress, "\r\x1b[2K")?;
+    progress.flush()
+}
+
+fn forward_benchmark_output(
+    events: impl IntoIterator<Item = BenchmarkEvent>,
+    stdout: &mut impl Write,
+    progress: &mut impl Write,
+    terminal: bool,
+) -> io::Result<bool> {
+    let mut started = false;
+    let mut progress_visible = false;
+    let mut line_open = false;
 
     let forward = (|| -> io::Result<()> {
         if terminal {
             write!(progress, "Running benchmarks...")?;
+            progress_visible = true;
         } else {
             writeln!(progress, "Running benchmarks...")?;
         }
         progress.flush()?;
 
-        loop {
-            line.clear();
-            if diagnostics.read_until(b'\n', &mut line)? == 0 {
-                break;
-            }
-            if let Some((phase, starting)) = benchmark_status(&line) {
-                benchmarks += usize::from(starting);
-                if terminal {
-                    write!(progress, "\r\x1b[2KBenchmark {benchmarks}: {phase}...")?;
-                    progress.flush()?;
+        for event in events {
+            match event {
+                BenchmarkEvent::Output(line) => {
+                    if progress_visible {
+                        clear_benchmark_progress(progress)?;
+                        progress_visible = false;
+                    }
+                    if !started {
+                        writeln!(stdout, "Benchmark results\n")?;
+                        started = true;
+                    }
+
+                    stdout.write_all(&line)?;
+                    stdout.flush()?;
+                    line_open = !line.ends_with(b"\n");
                 }
-            } else {
-                if terminal {
-                    write!(progress, "\r\x1b[2K")?;
+                BenchmarkEvent::Diagnostic(line) => {
+                    if let Some((name, phase)) = benchmark_status(&line) {
+                        if terminal && !line_open {
+                            write!(progress, "\r\x1b[2KBenchmark {name}: {phase}...")?;
+                            progress.flush()?;
+                            progress_visible = true;
+                        }
+                    } else {
+                        if progress_visible {
+                            clear_benchmark_progress(progress)?;
+                            progress_visible = false;
+                        }
+                        progress.write_all(&line)?;
+                        progress.flush()?;
+                    }
                 }
-                progress.write_all(&line)?;
-                progress.flush()?;
+                BenchmarkEvent::ReadError(error) => return Err(error),
             }
         }
         Ok(())
     })();
 
-    if terminal {
-        let _ = write!(progress, "\r\x1b[2K");
-        let _ = progress.flush();
+    if progress_visible {
+        let _ = clear_benchmark_progress(progress);
     }
-    // Always reap the process, and replay output even when the benchmark fails.
-    if forward.is_err() {
-        let _ = child.kill();
-    }
-    drop(diagnostics);
+
+    forward.map(|()| started)
+}
+
+fn run_benchmarks(command: &mut Command) -> Result<i32, String> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("run generated benchmark bridge: {e}"))?;
+    let output = child.stdout.take().unwrap();
+    let diagnostics = child.stderr.take().unwrap();
+    let (events, receiver) = mpsc::sync_channel(64);
+    let output_events = events.clone();
+    let mut stdout = io::stdout().lock();
+    let mut progress = io::stderr();
+    let terminal =
+        progress.is_terminal() && std::env::var_os("TERM").is_none_or(|term| term != "dumb");
+
+    let forward = thread::scope(|scope| {
+        scope.spawn(move || read_benchmark_stream(output, output_events, BenchmarkEvent::Output));
+        scope.spawn(move || read_benchmark_stream(diagnostics, events, BenchmarkEvent::Diagnostic));
+
+        let forward =
+            forward_benchmark_output(receiver.iter(), &mut stdout, &mut progress, terminal);
+        if forward.is_err() {
+            let _ = child.kill();
+        }
+        drop(receiver);
+
+        forward
+    });
+
+    // Always reap the process; results already printed remain visible on failure.
     let status = child
         .wait()
         .map_err(|e| format!("wait for benchmark bridge: {e}"))?;
-    output
-        .seek(SeekFrom::Start(0))
-        .map_err(|e| format!("rewind benchmark output: {e}"))?;
-    let mut stdout = io::stdout().lock();
-    if output.metadata().map_err(|e| e.to_string())?.len() > 0 {
-        writeln!(
-            stdout,
-            "{}\n",
-            if status.success() {
-                "Benchmark results"
-            } else {
-                "Benchmark output (incomplete)"
-            }
-        )
-        .map_err(|e| format!("write benchmark heading: {e}"))?;
-        io::copy(&mut output, &mut stdout).map_err(|e| format!("write benchmark results: {e}"))?;
+    let started = forward.map_err(|e| format!("forward benchmark output: {e}"))?;
+    if !status.success() && started {
+        writeln!(stdout, "\nBenchmark output (incomplete)")
+            .map_err(|e| format!("write benchmark failure: {e}"))?;
         stdout
             .flush()
-            .map_err(|e| format!("flush benchmark results: {e}"))?;
+            .map_err(|e| format!("flush benchmark failure: {e}"))?;
     }
-    forward.map_err(|e| format!("read benchmark diagnostics: {e}"))?;
+
     Ok(status.code().unwrap_or(1))
 }
 
@@ -595,6 +656,73 @@ mod tests {
     use super::*;
 
     #[test]
+    fn benchmark_scores_are_flushed_before_the_next_result() {
+        struct LiveOutput {
+            pending: Vec<u8>,
+            flushed: mpsc::Sender<Vec<u8>>,
+        }
+
+        impl Write for LiveOutput {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.pending.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                self.flushed
+                    .send(std::mem::take(&mut self.pending))
+                    .map_err(|error| io::Error::new(io::ErrorKind::BrokenPipe, error))
+            }
+        }
+
+        let (events, receiver) = mpsc::channel();
+        let (flushed, scores) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let mut output = LiveOutput {
+                pending: Vec::new(),
+                flushed,
+            };
+            let mut diagnostics = Vec::new();
+
+            let result = forward_benchmark_output(receiver, &mut output, &mut diagnostics, false);
+
+            (result, diagnostics)
+        });
+        let first_score = b"generator/day12/default time: [1 ns 2 ns 3 ns]\n";
+        let second_score = b"solver/day12/part1/default time: [4 ns 5 ns 6 ns]\n";
+
+        events
+            .send(BenchmarkEvent::Diagnostic(
+                b"Benchmarking generator/day12/default: Analyzing\n".to_vec(),
+            ))
+            .unwrap();
+        events
+            .send(BenchmarkEvent::Output(first_score.to_vec()))
+            .unwrap();
+        let first = scores.recv_timeout(std::time::Duration::from_secs(5));
+
+        events
+            .send(BenchmarkEvent::Diagnostic(
+                b"Benchmarking solver/day12/part1/default: Warming up for 10.000 ms\n".to_vec(),
+            ))
+            .unwrap();
+        events
+            .send(BenchmarkEvent::Output(second_score.to_vec()))
+            .unwrap();
+        let second = scores.recv_timeout(std::time::Duration::from_secs(5));
+        drop(events);
+        let (result, diagnostics) = worker.join().unwrap();
+
+        assert!(result.unwrap());
+        assert_eq!(
+            first.unwrap(),
+            [b"Benchmark results\n\n", first_score.as_slice()].concat()
+        );
+        assert_eq!(second.unwrap(), second_score);
+        assert_eq!(diagnostics, b"Running benchmarks...\n");
+    }
+
+    #[test]
     fn benchmark_color_respects_terminal_and_explicit_choices() {
         let cases = [
             (ColorChoice::Auto, true, false, false, true),
@@ -640,12 +768,13 @@ mod tests {
 
     #[test]
     fn criterion_status_filter_preserves_diagnostics() {
-        type StatusCase = (&'static [u8], Option<(&'static str, bool)>);
+        type StatusCase = (&'static [u8], Option<(&'static str, &'static str)>);
         let cases: &[StatusCase] = &[
-            (b"Benchmarking solver/day1/part1/default\n", Some(("starting", true))),
-            (b"Benchmarking generator/day1/default: Warming up for 10.000 ms\n", Some(("warming up", false))),
-            (b"Benchmarking end-to-end/day1/part2/owned: Collecting 10 samples in estimated 20.000 ms (500k iterations)\n", Some(("measuring", false))),
-            (b"Benchmarking full-run/2025: Analyzing\n", Some(("analyzing", false))),
+            (b"Benchmarking solver/day1/part1/default\n", Some(("solver/day1/part1/default", "starting"))),
+            (b"Benchmarking generator/day1/default: Warming up for 10.000 ms\n", Some(("generator/day1/default", "warming up"))),
+            (b"Benchmarking generator/day12/default: Collecting 10 samples in estimated 20.000 ms (500k iterations)\r\n", Some(("generator/day12/default", "measuring"))),
+            (b"Benchmarking end-to-end/day1/part2/owned: Collecting 10 samples in estimated 20.000 ms (500k iterations)\n", Some(("end-to-end/day1/part2/owned", "measuring"))),
+            (b"Benchmarking full-run/2025: Analyzing\n", Some(("full-run/2025", "analyzing"))),
             (b"Warning: unable to complete 10 samples\n", None),
             (b"Benchmarking solver/day1/part1/default: unexpected failure\n", None),
             (b"Benchmarking user operation failed\n", None),

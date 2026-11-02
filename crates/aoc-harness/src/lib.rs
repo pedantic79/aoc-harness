@@ -179,7 +179,7 @@ pub enum Action {
 pub struct Options {
     #[arg(value_enum, default_value = "run")]
     pub action: Action,
-    /// Select days (comma-separated or repeated); run defaults to the latest registered day.
+    /// Select days (comma-separated or repeated); run and bench default to the latest registered day.
     #[arg(long, visible_alias = "days", value_delimiter = ',', value_parser = clap::value_parser!(u8).range(1..=25))]
     pub day: Vec<u8>,
     /// Select every registered day instead of the latest day.
@@ -246,7 +246,10 @@ fn positive_seconds(value: &str) -> Result<f64, String> {
 impl Registry {
     fn selected_days(&self, options: &Options) -> Vec<u8> {
         let mut days = options.day.clone();
-        if days.is_empty() && !options.all_days && matches!(options.action, Action::Run) {
+        if days.is_empty()
+            && !options.all_days
+            && matches!(options.action, Action::Run | Action::Bench)
+        {
             days.extend(self.solutions.iter().map(|s| s.day).max());
         }
 

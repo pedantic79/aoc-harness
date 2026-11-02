@@ -140,6 +140,7 @@ fn command_help_works_without_a_consumer_or_cargo() {
                 assert_eq!(output.contains("--sample-size"), action == "bench");
                 assert_eq!(output.contains("--smoke"), action == "bench");
                 assert_eq!(output.contains("--color"), action == "bench");
+                assert_eq!(output.contains("latest registered day"), action != "list");
             }
         }
 
@@ -336,12 +337,49 @@ fn installed_library_workflow() {
     assert!(output.contains("day 5 part 1 [only]"));
 
     let output = success(run(&["bench", "--smoke", "--profile", "dev"]));
+
+    assert!(output.contains("Smoke: generator/day3/default\n"));
+    assert!(output.contains("Smoke: solver/day3/part1/default\n"));
+    assert!(output.contains("Smoke: solver/day3/part2/default\n"));
+    assert!(output.contains("Smoke: full-run/2025-day-3\n"));
+    assert!(!output.contains("day1/"));
+    assert!(!output.contains("day2/"));
+
+    let cargo = success(invoke(
+        "cargo",
+        &consumer,
+        &["aoc-harness", "bench", "--smoke", "--profile", "dev"],
+        &target,
+        &installed,
+    ));
+
+    assert_eq!(output, cargo);
+
+    let output = success(run(&[
+        "bench",
+        "--features",
+        "bonus",
+        "--smoke",
+        "--profile",
+        "dev",
+    ]));
+
+    assert!(output.contains("Smoke: solver/day5/part1/only\n"));
+    assert!(output.contains("Smoke: end-to-end/day5/part1/only\n"));
+    assert!(output.contains("Smoke: full-run/2025-day-5\n"));
+    assert!(!output.contains("day3/"));
+
+    let output = success(run(&["bench", "--all-days", "--smoke", "--profile", "dev"]));
+
     for family in ["generator/", "solver/", "end-to-end/", "full-run/"] {
         assert!(output.contains(family));
     }
     assert!(output.contains("Smoke: generator/day1/default\n"));
     assert!(output.contains("Smoke: generator/day1/part2/default\n"));
     assert!(output.contains("Smoke: generator/day1/part2/mutable\n"));
+    assert!(output.contains("Smoke: solver/day2/part1/default\n"));
+    assert!(output.contains("Smoke: generator/day3/default\n"));
+    assert!(output.contains("Smoke: full-run/2025\n"));
     assert!(!output.contains("part0"));
     let output = success(run(&[
         "bench",
@@ -612,7 +650,7 @@ fn installed_library_workflow() {
         failure(run(&["list", "--profile", "dev"]), expected);
     }
 
-    // A failure inside Criterion must preserve buffered output and live diagnostics.
+    // A failure inside Criterion must preserve streamed output and live diagnostics.
     fs::write(
         &source,
         r#"
@@ -654,7 +692,8 @@ aoc_harness::aoc_lib! { year = 2025 }
     let diagnostics = String::from_utf8_lossy(&benchmark.stderr);
 
     assert!(!benchmark.status.success());
-    assert!(output.starts_with("Benchmark output (incomplete)\n\n"));
+    assert!(output.starts_with("Benchmark results\n\n"));
+    assert!(output.contains("Benchmark output (incomplete)"));
     assert!(output.contains("consumer output before measurement failure"));
     assert!(!output.contains("Benchmark reports:"));
     assert!(diagnostics.contains("consumer diagnostic before measurement failure"));

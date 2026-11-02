@@ -23,8 +23,8 @@ fn action_command(action: &'static str) -> Command {
             "Examples:\n  aoc-harness list\n  aoc-harness list --days 1,3\n  aoc-harness list --day 4 --part 2",
         ),
         "bench" => (
-            "Benchmark all solution variants and the default full run; selects every day by default",
-            "Examples:\n  aoc-harness bench\n  aoc-harness bench --day 4 --smoke\n  aoc-harness bench --filter '^solver/' --sample-size 20",
+            "Benchmark the latest registered day by default, including all variants and the full run",
+            "Examples:\n  aoc-harness bench\n  aoc-harness bench --days 1,3\n  aoc-harness bench --all-days\n  aoc-harness bench --day 4 --smoke\n  aoc-harness bench --filter '^solver/' --sample-size 20",
         ),
         _ => unreachable!("known command"),
     };
