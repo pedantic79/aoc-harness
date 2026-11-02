@@ -71,7 +71,7 @@ def main():
     common = ["--manifest-path", str(destination / "Cargo.toml"), "--target-dir", str(root / "target"), "--profile", args.profile]
     if args.offline:
         common.append("--offline")
-    output = subprocess.check_output([str(cli), "run", *common], text=True)
+    output = subprocess.check_output([str(cli), "run", "--all-days", *common], text=True)
     (destination / "run.stdout.log").write_text(output)
     for line in output.splitlines():
         if not line or re.match(r"(?:AOC \d+|Day \d+ - Part|\t(?:generator|runner|total):|Full run)", line):

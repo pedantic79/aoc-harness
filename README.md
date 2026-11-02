@@ -16,6 +16,8 @@ export PATH="$PWD/target/install/bin:$PATH"
 
 aoc-harness list --manifest-path fixtures/library/Cargo.toml
 aoc-harness run --manifest-path fixtures/library/Cargo.toml
+cargo aoc-harness run --manifest-path fixtures/library/Cargo.toml --all-days
+cargo aoc-harness run --manifest-path fixtures/library/Cargo.toml --day 1,3
 cargo aoc-harness run --manifest-path fixtures/library/Cargo.toml --day 1
 aoc-harness run --manifest-path fixtures/library/Cargo.toml --day 1 --part 2 --solution mutable
 aoc-harness run --manifest-path fixtures/library/Cargo.toml --day 1 --all-solutions
@@ -32,8 +34,9 @@ raw text and bytes. Day 3 returns `Vec<&str>` and supplies borrowed and mutable
 slices. `--features bonus` enables another solution and a conditional generator
 override. Neither executable source nor benchmark source belongs in the consumer.
 
-The example's normal answers are `6`, `12`, `5`, `5`, `2`, `2`. The named mutable
-variant returns `306`; its generator is more specific than the part override.
+The example's latest-day answers are `2`, `2`; `--all-days` produces
+`6`, `12`, `5`, `5`, `2`, `2`. The named mutable variant returns `306`; its
+generator is more specific than the part override.
 
 Run output follows cargo-aoc's familiar layout. For example, `run --day 1`
 produces the following structure (timings vary):
@@ -111,8 +114,8 @@ Add `input/2025/day1.txt`, then run `aoc-harness run` from the consumer director
 Omitting `run` has the same behavior. Inputs are relative to the **consumer
 manifest**, even though the executable lives elsewhere. Trailing `\n` characters
 are removed; spaces, carriage returns, and other whitespace are preserved.
-`--input PATH` overrides the file for a single `--day`; an explicit relative path
-is relative to the invocation directory.
+`--input PATH` overrides the file for exactly one selected `--day`; an explicit
+relative path is relative to the invocation directory.
 
 Functions remain callable directly by ordinary Rust tests. Answers must implement
 `Display + 'static`. Generators and solvers may return `Result<T, E>` where `E`
@@ -141,7 +144,15 @@ an explicit default. Duplicate identities, duplicate generators, and conflicting
 defaults fail compilation. `list` shows all variants and marks the selected
 defaults. Solutions execute sequentially in day/part/name order.
 
+`run` defaults to the highest registered day, including registrations enabled by
+features. Use `--day 1,3` (also `--days 1,3`) or repeat `--day 1 --day 3` to select
+multiple days. Repeated days run once, in day order. `--all-days` runs every
+registered day and cannot be combined with `--day`. `list` and `bench` continue
+to select every day by default and accept the same explicit day options.
+
 ```sh
+aoc-harness run --all-days
+aoc-harness run --days 1,3
 aoc-harness run --day 4 --part 2 --solution flood_fill
 aoc-harness run --day 4 --all-solutions
 aoc-harness list --day 4
@@ -152,6 +163,10 @@ scope. A failed solver or generator stops the run, reports completed answers and
 partial timings, and never prints a successful full-run total.
 
 ## Cargo integration
+
+Use `aoc-harness --help` for the command overview. `cargo aoc-harness run --help`,
+`list --help`, and `bench --help` each show their own options and examples. Help
+works outside a consumer project without invoking Cargo or building a bridge.
 
 Both `aoc-harness` and `cargo aoc-harness` support:
 

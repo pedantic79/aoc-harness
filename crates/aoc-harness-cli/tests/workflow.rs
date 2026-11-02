@@ -90,6 +90,88 @@ fn copy_fixture(source: &Path, destination: &Path, runtime: &Path) {
 }
 
 #[test]
+fn command_help_works_without_a_consumer_or_cargo() {
+    let directory = tempfile::tempdir().unwrap();
+    let programs: &[(&str, &[&str])] = &[
+        (env!("CARGO_BIN_EXE_aoc-harness"), &[]),
+        (env!("CARGO_BIN_EXE_cargo-aoc-harness"), &["aoc-harness"]),
+    ];
+
+    for (program, prefix) in programs {
+        let help = |args: &[&str]| {
+            let output = Command::new(program)
+                .args(*prefix)
+                .args(args)
+                .current_dir(directory.path())
+                .env("CARGO", directory.path().join("missing-cargo"))
+                .output()
+                .unwrap();
+
+            assert!(output.stderr.is_empty(), "{output:?}");
+            success(output)
+        };
+
+        let output = help(&["--help"]);
+
+        assert!(output.contains("Usage: aoc-harness [OPTIONS] [COMMAND]"));
+        assert!(output.contains("Commands:"));
+        for action in ["run", "list", "bench"] {
+            assert!(output.contains(action));
+        }
+
+        for action in ["run", "list", "bench"] {
+            for args in [
+                vec![action, "--help"],
+                vec![action, "-h"],
+                vec!["help", action],
+            ] {
+                let output = help(&args);
+
+                assert!(output.contains(&format!("Usage: aoc-harness {action} [OPTIONS]")));
+                assert!(output.contains("--manifest-path"));
+                assert!(output.contains("--day"));
+                assert!(output.contains("--all-days"));
+                assert!(output.contains("--solution"));
+                assert!(output.contains("Examples:"));
+                assert!(!output.contains("Commands:"));
+                assert_eq!(output.contains("--all-solutions"), action == "run");
+                assert_eq!(output.contains("--input"), action != "list");
+                assert_eq!(output.contains("--filter"), action == "bench");
+                assert_eq!(output.contains("--sample-size"), action == "bench");
+                assert_eq!(output.contains("--smoke"), action == "bench");
+                assert_eq!(output.contains("--color"), action == "bench");
+            }
+        }
+
+        for (args, action) in [
+            (vec!["--day", "1", "bench", "--help"], "bench"),
+            (vec!["--manifest-path", "bench", "list", "--help"], "list"),
+            (
+                vec!["run", "--day", "1", "--input", "list", "--help"],
+                "run",
+            ),
+            (
+                vec![
+                    "run",
+                    "--day",
+                    "1",
+                    "--part",
+                    "1",
+                    "--solution",
+                    "bench",
+                    "--help",
+                ],
+                "run",
+            ),
+        ] {
+            let output = help(&args);
+
+            assert!(output.contains(&format!("Usage: aoc-harness {action} [OPTIONS]")));
+        }
+    }
+}
+
+#[test]
 fn installed_library_workflow() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -132,6 +214,25 @@ fn installed_library_workflow() {
 
     let output = success(run(&["--profile", "dev"]));
 
+    assert!(output.starts_with("AOC 2025\n\nDay 3 - Part 1: 2\n\tgenerator: "));
+    assert!(output.contains("Day 3 - Part 2: 2"));
+    assert!(!output.contains("Day 1 -"));
+    assert!(!output.contains("Day 2 -"));
+    assert!(output.contains("Full run (2025 day 3, 2 selected)"));
+
+    let output = success(invoke(
+        "cargo",
+        &consumer,
+        &["aoc-harness", "run", "--profile", "dev"],
+        &target,
+        &installed,
+    ));
+
+    assert!(output.contains("Full run (2025 day 3, 2 selected)"));
+    assert!(!output.contains("Day 1 -"));
+
+    let output = success(run(&["run", "--all-days", "--profile", "dev"]));
+
     assert!(output.starts_with("AOC 2025\n\nDay 1 - Part 1: 6\n\tgenerator: "));
     assert!(output.contains("\n\trunner: "));
     assert!(output.contains("\n\nDay 1 - Part 2 - owned: 12\n\tgenerator: "));
@@ -139,6 +240,23 @@ fn installed_library_workflow() {
     assert!(output.contains("Full run (2025, 6 selected):\n\tgenerator: "));
     assert!(output.contains("\n\ttotal: "));
     assert!(output.contains("generator: 0ns"));
+
+    for selection in [
+        vec!["run", "--day", "3,1,3"],
+        vec!["--day", "3", "run", "--day", "1"],
+        vec!["run", "--days=1,3"],
+    ] {
+        let mut args = selection;
+        args.extend(["--profile", "dev"]);
+
+        let output = success(run(&args));
+
+        assert!(output.starts_with("AOC 2025\n\nDay 1 - Part 1: 6"));
+        assert!(output.contains("Day 1 - Part 2 - owned: 12"));
+        assert!(output.contains("Day 3 - Part 2: 2"));
+        assert!(!output.contains("Day 2 -"));
+        assert!(output.contains("Full run (2025 days 1,3, 4 selected)"));
+    }
 
     let standalone = success(run(&["list", "--profile", "dev"]));
     let cargo = success(invoke(
@@ -150,8 +268,16 @@ fn installed_library_workflow() {
     ));
 
     assert_eq!(standalone, cargo);
+    assert!(standalone.contains("day 1 part 1 [default] (selected default)"));
     assert!(standalone.contains("[owned] (selected default)"));
     assert!(standalone.contains("[mutable]"));
+    assert!(standalone.contains("day 3 part 2 [default] (selected default)"));
+
+    let output = success(run(&["list", "--days", "1,3", "--profile", "dev"]));
+
+    assert!(output.contains("day 1 part 2 [owned] (selected default)"));
+    assert!(output.contains("day 3 part 2 [default] (selected default)"));
+    assert!(!output.contains("day 2 part"));
 
     let output = success(run(&[
         "run",
@@ -180,6 +306,12 @@ fn installed_library_workflow() {
     let output = success(run(&["list", "--features", "bonus", "--profile", "dev"]));
 
     assert!(output.contains("day 5 part 1 [only]"));
+    let output = success(run(&["run", "--features", "bonus", "--profile", "dev"]));
+
+    assert!(output.contains("Day 5 - Part 1 - only:"));
+    assert!(output.contains("Full run (2025 day 5, 1 selected)"));
+    assert!(!output.contains("Day 3 -"));
+
     let output = success(run(&[
         "run",
         "--day",
@@ -211,6 +343,20 @@ fn installed_library_workflow() {
     assert!(output.contains("Smoke: generator/day1/part2/default\n"));
     assert!(output.contains("Smoke: generator/day1/part2/mutable\n"));
     assert!(!output.contains("part0"));
+    let output = success(run(&[
+        "bench",
+        "--days",
+        "1,3",
+        "--smoke",
+        "--profile",
+        "dev",
+    ]));
+
+    assert!(output.contains("Smoke: generator/day1/default\n"));
+    assert!(output.contains("Smoke: generator/day3/default\n"));
+    assert!(output.contains("Smoke: full-run/2025-days-1,3\n"));
+    assert!(!output.contains("day2/"));
+
     success(invoke(
         "cargo",
         &consumer,
@@ -323,6 +469,26 @@ fn installed_library_workflow() {
         "day 1 input",
     );
     failure(run(&["run", "--part", "1", "--profile", "dev"]), "--day");
+    failure(
+        run(&["run", "--day", "1", "--all-days", "--profile", "dev"]),
+        "cannot be used with",
+    );
+    failure(
+        run(&["run", "--day", "1,25", "--profile", "dev"]),
+        "no solutions match",
+    );
+    failure(
+        run(&[
+            "run",
+            "--days",
+            "1,3",
+            "--input",
+            "missing input",
+            "--profile",
+            "dev",
+        ]),
+        "--input requires exactly one selected day",
+    );
     failure(
         run(&["bench", "--filter", "[", "--smoke", "--profile", "dev"]),
         "benchmark filter",

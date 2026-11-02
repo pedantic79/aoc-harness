@@ -201,7 +201,7 @@ mod tests {
     fn imported_result_alias_and_borrowed_parsed_values_work() {
         let registry = __aoc_registry();
         let options = aoc_harness::Options {
-            day: Some(23),
+            day: vec![23],
             ..Default::default()
         };
         let selected = registry.select(&options, false).unwrap();
@@ -217,7 +217,7 @@ mod tests {
     fn typed_preparation_and_timings_include_each_generation_and_cleanup() {
         let registry = __aoc_registry();
         let options = aoc_harness::Options {
-            day: Some(20),
+            day: vec![20],
             ..Default::default()
         };
         let selected = registry.select(&options, false).unwrap();

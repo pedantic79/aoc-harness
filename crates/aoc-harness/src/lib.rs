@@ -171,7 +171,7 @@ pub enum Action {
     Bench,
 }
 
-#[derive(Debug, Parser)]
+#[derive(Clone, Debug, Parser)]
 #[command(
     name = "aoc-harness",
     about = "Run a registered Advent of Code library"
@@ -179,15 +179,19 @@ pub enum Action {
 pub struct Options {
     #[arg(value_enum, default_value = "run")]
     pub action: Action,
-    #[arg(long, value_parser = clap::value_parser!(u8).range(1..=25))]
-    pub day: Option<u8>,
+    /// Select days (comma-separated or repeated); run defaults to the latest registered day.
+    #[arg(long, visible_alias = "days", value_delimiter = ',', value_parser = clap::value_parser!(u8).range(1..=25))]
+    pub day: Vec<u8>,
+    /// Select every registered day instead of the latest day.
+    #[arg(long, conflicts_with = "day")]
+    pub all_days: bool,
     #[arg(long, requires = "day", value_parser = clap::value_parser!(u8).range(1..=2))]
     pub part: Option<u8>,
     #[arg(long, requires_all = ["day", "part"], conflicts_with = "all_solutions")]
     pub solution: Option<String>,
     #[arg(long)]
     pub all_solutions: bool,
-    #[arg(long, requires = "day")]
+    #[arg(long, requires = "day", conflicts_with = "all_days")]
     pub input: Option<PathBuf>,
     /// Regex over Criterion benchmark names.
     #[arg(long)]
@@ -214,7 +218,8 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             action: Action::Run,
-            day: None,
+            day: Vec::new(),
+            all_days: false,
             part: None,
             solution: None,
             all_solutions: false,
@@ -239,18 +244,38 @@ fn positive_seconds(value: &str) -> Result<f64, String> {
 }
 
 impl Registry {
+    fn selected_days(&self, options: &Options) -> Vec<u8> {
+        let mut days = options.day.clone();
+        if days.is_empty() && !options.all_days && matches!(options.action, Action::Run) {
+            days.extend(self.solutions.iter().map(|s| s.day).max());
+        }
+
+        days.sort_unstable();
+        days.dedup();
+        days
+    }
+
     pub fn select(&self, options: &Options, variants: bool) -> Result<Vec<&Solution>, Error> {
+        let days = self.selected_days(options);
+        if options.input.is_some() && days.len() != 1 {
+            return Err(Error::message("--input requires exactly one selected day"));
+        }
+
         let mut candidates: Vec<_> = self
             .solutions
             .iter()
             .filter(|s| {
-                options.day.is_none_or(|d| s.day == d)
+                (days.is_empty() || days.contains(&s.day))
                     && options.part.is_none_or(|p| s.part == p)
                     && options.solution.as_ref().is_none_or(|n| s.name == n)
             })
             .collect();
         candidates.sort_by_key(|s| (s.day, s.part, s.name));
-        if candidates.is_empty() {
+        if candidates.is_empty()
+            || days
+                .iter()
+                .any(|day| !candidates.iter().any(|s| s.day == *day))
+        {
             return Err(Error::message(
                 "no solutions match the requested day, part, and variant",
             ));
@@ -345,7 +370,7 @@ impl Registry {
                 result.solver
             );
         }
-        let scope = scope(self.year, options);
+        let scope = self.scope(options);
         let status = if failure.is_some() {
             "Partial run"
         } else if options.all_solutions {
@@ -363,12 +388,11 @@ impl Registry {
 
     pub fn list(&self, options: &Options) -> Result<(), Error> {
         let selected = self.select(options, true)?;
-        let mut defaults_options = Options {
-            day: options.day,
-            part: options.part,
-            ..Options::default()
+        let defaults_options = Options {
+            solution: None,
+            all_solutions: false,
+            ..options.clone()
         };
-        defaults_options.solution = None;
         let defaults = self.select(&defaults_options, false)?;
 
         for solution in selected {
@@ -389,10 +413,9 @@ impl Registry {
         let selected = self.select(options, true)?;
         // Full-run benches always follow the runner's default selection within the scope.
         let defaults_options = Options {
-            day: options.day,
-            part: options.part,
-            input: options.input.clone(),
-            ..Options::default()
+            solution: None,
+            all_solutions: false,
+            ..options.clone()
         };
         let defaults = self.select(&defaults_options, false)?;
         let mut required = selected.clone();
@@ -404,8 +427,7 @@ impl Registry {
             .generators
             .iter()
             .filter(|g| {
-                options.day.is_none_or(|d| g.day == d)
-                    && options.part.is_none_or(|p| g.part == 0 || g.part == p)
+                options.part.is_none_or(|p| g.part == 0 || g.part == p)
                     && options
                         .solution
                         .as_ref()
@@ -432,7 +454,7 @@ impl Registry {
         let matches = |label: &str| filter.as_ref().is_none_or(|f| f.is_match(label));
         let full_label = format!(
             "full-run/{}",
-            scope(self.year, &defaults_options).replace(' ', "-")
+            self.scope(&defaults_options).replace(' ', "-")
         );
         let generator_label = |g: &Generator| {
             if g.part == 0 {
@@ -524,20 +546,26 @@ impl Registry {
         println!("Benchmark reports: {}", report.display());
         Ok(())
     }
-}
 
-fn scope(year: u16, options: &Options) -> String {
-    let mut scope = year.to_string();
-    if let Some(day) = options.day {
-        scope.push_str(&format!(" day {day}"));
+    fn scope(&self, options: &Options) -> String {
+        let mut scope = self.year.to_string();
+        let days = self.selected_days(options);
+        match days.as_slice() {
+            [] => {}
+            [day] => scope.push_str(&format!(" day {day}")),
+            _ => {
+                let days: Vec<_> = days.iter().map(u8::to_string).collect();
+                scope.push_str(&format!(" days {}", days.join(",")));
+            }
+        }
+        if let Some(part) = options.part {
+            scope.push_str(&format!(" part {part}"));
+        }
+        if let Some(name) = &options.solution {
+            scope.push_str(&format!(" [{name}]"));
+        }
+        scope
     }
-    if let Some(part) = options.part {
-        scope.push_str(&format!(" part {part}"));
-    }
-    if let Some(name) = &options.solution {
-        scope.push_str(&format!(" [{name}]"));
-    }
-    scope
 }
 
 pub fn entry(registry: Registry) -> i32 {
@@ -552,6 +580,48 @@ pub fn entry(registry: Registry) -> i32 {
         Err(error) => {
             eprintln!("error: {error}");
             1
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn day_selection_accepts_single_comma_separated_and_repeated_days() {
+        let cases: &[(&[&str], &[u8])] = &[
+            (&["run", "--day", "4"], &[4]),
+            (&["run", "--day", "1,4"], &[1, 4]),
+            (&["--day", "1", "run", "--day", "4"], &[1, 4]),
+            (&["run", "--days=1,4"], &[1, 4]),
+        ];
+
+        for (args, expected) in cases {
+            let args = std::iter::once("aoc-harness").chain(args.iter().copied());
+
+            let options = Options::try_parse_from(args).unwrap();
+
+            assert_eq!(options.day, *expected);
+            assert!(!options.all_days);
+        }
+    }
+
+    #[test]
+    fn day_selection_rejects_out_of_range_days_and_conflicting_selectors() {
+        let cases: &[&[&str]] = &[
+            &["run", "--day", "0"],
+            &["run", "--day", "1,26"],
+            &["run", "--days", "1,4", "--all-days"],
+            &["run", "--all-days", "--input", "input.txt"],
+        ];
+
+        for args in cases {
+            let input = std::iter::once("aoc-harness").chain(args.iter().copied());
+
+            let result = Options::try_parse_from(input);
+
+            assert!(result.is_err(), "unexpectedly accepted {args:?}");
         }
     }
 }

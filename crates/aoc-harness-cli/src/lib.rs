@@ -9,37 +9,50 @@ use std::{
     process::{Command, Stdio},
 };
 
+mod help;
+
 #[derive(Debug, Default, Parser)]
 #[command(
     name = "aoc-harness",
     about = "Run a library-only Advent of Code consumer",
-    after_help = "Commands: run (default), list, bench\nSelection: --day N --part N --solution NAME --all-solutions --input PATH\nBenchmarks: --filter REGEX --sample-size N --warm-up-time SECONDS --measurement-time SECONDS --smoke\nAll options may appear before or after the command."
+    next_help_heading = "Build options"
 )]
 struct BuildOptions {
+    /// Path to the consumer's Cargo.toml.
     #[arg(long)]
     manifest_path: Option<PathBuf>,
+    /// Consumer package to select from a workspace.
     #[arg(short, long)]
     package: Option<String>,
+    /// Enable consumer features (comma-separated or repeated).
     #[arg(short = 'F', long, action = clap::ArgAction::Append)]
     features: Vec<String>,
+    /// Enable all consumer features.
     #[arg(long)]
     all_features: bool,
+    /// Disable the consumer's default features.
     #[arg(long)]
     no_default_features: bool,
+    /// Cargo build profile.
     #[arg(long, default_value = "release")]
     profile: String,
+    /// Compile for a target triple.
     #[arg(long)]
     target: Option<String>,
+    /// Directory for build artifacts and generated bridges.
     #[arg(long)]
     target_dir: Option<PathBuf>,
+    /// Build without accessing the network.
     #[arg(long)]
     offline: bool,
+    /// Require an up-to-date consumer lockfile.
     #[arg(long)]
     locked: bool,
+    /// Override Cargo configuration (repeatable).
     #[arg(long, action = clap::ArgAction::Append)]
     config: Vec<String>,
     /// Benchmark result colors; auto uses the terminal receiving the final results.
-    #[arg(long, value_enum, default_value_t = ColorChoice::Auto)]
+    #[arg(long, value_enum, default_value_t = ColorChoice::Auto, help_heading = "Benchmark options")]
     color: ColorChoice,
 }
 
@@ -125,19 +138,29 @@ fn normalize_patch_paths(value: &mut toml::Value, root: &Path) {
     }
 }
 
-fn measured_bench(args: &[OsString]) -> bool {
+#[derive(Default)]
+struct RuntimeMode<'a> {
+    action: Option<&'a str>,
+    smoke: bool,
+    help: bool,
+}
+
+fn runtime_mode(args: &[OsString]) -> RuntimeMode<'_> {
     let mut args = args.iter();
-    let mut bench = false;
-    let mut smoke = false;
+    let mut mode = RuntimeMode::default();
+
     while let Some(arg) = args.next() {
-        if arg == "bench" {
-            bench = true;
+        if matches!(arg.to_str(), Some("run" | "list" | "bench")) {
+            mode.action = arg.to_str();
+        } else if matches!(arg.to_str(), Some("--help" | "-h" | "help")) {
+            mode.help = true;
         } else if arg == "--smoke" {
-            smoke = true;
+            mode.smoke = true;
         } else if matches!(
             arg.to_str(),
             Some(
                 "--day"
+                    | "--days"
                     | "--part"
                     | "--solution"
                     | "--input"
@@ -151,7 +174,14 @@ fn measured_bench(args: &[OsString]) -> bool {
             args.next();
         }
     }
-    bench && !smoke
+
+    mode
+}
+
+fn measured_bench(args: &[OsString]) -> bool {
+    let mode = runtime_mode(args);
+
+    mode.action == Some("bench") && !mode.smoke
 }
 
 fn benchmark_status(line: &[u8]) -> Option<(&str, bool)> {
@@ -534,13 +564,15 @@ pub fn main_entry(cargo_subcommand: bool) -> i32 {
     if cargo_subcommand && args.first().is_some_and(|s| s == "aoc-harness") {
         args.remove(0);
     }
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        use clap::CommandFactory;
-        BuildOptions::command().print_help().expect("print help");
+
+    let (build, runtime) = split_arguments(args);
+    let mode = runtime_mode(&runtime);
+    if mode.help {
+        help::command(mode.action).print_help().expect("print help");
         println!();
         return 0;
     }
-    let (build, runtime) = split_arguments(args);
+
     let options = match BuildOptions::try_parse_from(build) {
         Ok(options) => options,
         Err(error) => {
@@ -548,6 +580,7 @@ pub fn main_entry(cargo_subcommand: bool) -> i32 {
             return error.exit_code();
         }
     };
+
     match run(options, runtime) {
         Ok(code) => code,
         Err(error) => {
