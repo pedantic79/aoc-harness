@@ -1,10 +1,10 @@
-use clap::Parser;
+use clap::{ColorChoice, Parser};
 use serde_json::Value;
 use std::{
     collections::hash_map::DefaultHasher,
     ffi::OsString,
     hash::{Hash, Hasher},
-    io::{BufRead, BufReader},
+    io::{self, BufRead, BufReader, IsTerminal, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
@@ -38,6 +38,9 @@ struct BuildOptions {
     locked: bool,
     #[arg(long, action = clap::ArgAction::Append)]
     config: Vec<String>,
+    /// Benchmark result colors; auto uses the terminal receiving the final results.
+    #[arg(long, value_enum, default_value_t = ColorChoice::Auto)]
+    color: ColorChoice,
 }
 
 fn split_arguments(args: Vec<OsString>) -> (Vec<OsString>, Vec<OsString>) {
@@ -58,6 +61,7 @@ fn split_arguments(args: Vec<OsString>) -> (Vec<OsString>, Vec<OsString>) {
                 | "--target"
                 | "--target-dir"
                 | "--config"
+                | "--color"
         );
         let flag = matches!(
             key,
@@ -119,6 +123,153 @@ fn normalize_patch_paths(value: &mut toml::Value, root: &Path) {
             normalize_patch_paths(value, root);
         }
     }
+}
+
+fn measured_bench(args: &[OsString]) -> bool {
+    let mut args = args.iter();
+    let mut bench = false;
+    let mut smoke = false;
+    while let Some(arg) = args.next() {
+        if arg == "bench" {
+            bench = true;
+        } else if arg == "--smoke" {
+            smoke = true;
+        } else if matches!(
+            arg.to_str(),
+            Some(
+                "--day"
+                    | "--part"
+                    | "--solution"
+                    | "--input"
+                    | "--filter"
+                    | "--sample-size"
+                    | "--warm-up-time"
+                    | "--measurement-time"
+                    | "--report-dir"
+            )
+        ) {
+            args.next();
+        }
+    }
+    bench && !smoke
+}
+
+fn benchmark_status(line: &[u8]) -> Option<(&str, bool)> {
+    let text = std::str::from_utf8(line)
+        .ok()?
+        .trim_end_matches(['\r', '\n']);
+    let text = text.strip_prefix("Benchmarking ")?;
+    if !["generator/", "solver/", "end-to-end/", "full-run/"]
+        .iter()
+        .any(|family| text.starts_with(family))
+    {
+        return None;
+    }
+
+    match text.split_once(": ") {
+        None => Some(("starting", true)),
+        Some((_, phase)) if phase.starts_with("Warming up for ") => Some(("warming up", false)),
+        Some((_, phase))
+            if phase.starts_with("Collecting ") && phase.contains(" samples in estimated ") =>
+        {
+            Some(("measuring", false))
+        }
+        Some((_, "Analyzing")) => Some(("analyzing", false)),
+        _ => None,
+    }
+}
+
+fn color_enabled(choice: ColorChoice, terminal: bool, no_color: bool, dumb_terminal: bool) -> bool {
+    match choice {
+        ColorChoice::Always => true,
+        ColorChoice::Never => false,
+        ColorChoice::Auto => terminal && !no_color && !dumb_terminal,
+    }
+}
+
+fn run_benchmarks(command: &mut Command) -> Result<i32, String> {
+    // Keep potentially large consumer output on disk, outside the measurement process.
+    let mut output =
+        tempfile::tempfile().map_err(|e| format!("create benchmark output file: {e}"))?;
+    let destination = output
+        .try_clone()
+        .map_err(|e| format!("clone benchmark output file: {e}"))?;
+    let mut child = command
+        .stdout(Stdio::from(destination))
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("run generated benchmark bridge: {e}"))?;
+    let mut progress = io::stderr();
+    let terminal =
+        progress.is_terminal() && std::env::var_os("TERM").is_none_or(|term| term != "dumb");
+    let mut benchmarks = 0;
+    let mut line = Vec::new();
+    let mut diagnostics = BufReader::new(child.stderr.take().unwrap());
+
+    let forward = (|| -> io::Result<()> {
+        if terminal {
+            write!(progress, "Running benchmarks...")?;
+        } else {
+            writeln!(progress, "Running benchmarks...")?;
+        }
+        progress.flush()?;
+
+        loop {
+            line.clear();
+            if diagnostics.read_until(b'\n', &mut line)? == 0 {
+                break;
+            }
+            if let Some((phase, starting)) = benchmark_status(&line) {
+                benchmarks += usize::from(starting);
+                if terminal {
+                    write!(progress, "\r\x1b[2KBenchmark {benchmarks}: {phase}...")?;
+                    progress.flush()?;
+                }
+            } else {
+                if terminal {
+                    write!(progress, "\r\x1b[2K")?;
+                }
+                progress.write_all(&line)?;
+                progress.flush()?;
+            }
+        }
+        Ok(())
+    })();
+
+    if terminal {
+        let _ = write!(progress, "\r\x1b[2K");
+        let _ = progress.flush();
+    }
+    // Always reap the process, and replay output even when the benchmark fails.
+    if forward.is_err() {
+        let _ = child.kill();
+    }
+    drop(diagnostics);
+    let status = child
+        .wait()
+        .map_err(|e| format!("wait for benchmark bridge: {e}"))?;
+    output
+        .seek(SeekFrom::Start(0))
+        .map_err(|e| format!("rewind benchmark output: {e}"))?;
+    let mut stdout = io::stdout().lock();
+    if output.metadata().map_err(|e| e.to_string())?.len() > 0 {
+        writeln!(
+            stdout,
+            "{}\n",
+            if status.success() {
+                "Benchmark results"
+            } else {
+                "Benchmark output (incomplete)"
+            }
+        )
+        .map_err(|e| format!("write benchmark heading: {e}"))?;
+        io::copy(&mut output, &mut stdout).map_err(|e| format!("write benchmark results: {e}"))?;
+        stdout
+            .flush()
+            .map_err(|e| format!("flush benchmark results: {e}"))?;
+    }
+    forward.map_err(|e| format!("read benchmark diagnostics: {e}"))?;
+    Ok(status.code().unwrap_or(1))
 }
 
 fn run(options: BuildOptions, runtime: Vec<OsString>) -> Result<i32, String> {
@@ -354,10 +505,25 @@ fn run(options: BuildOptions, runtime: Vec<OsString>) -> Result<i32, String> {
     }
     let executable = executable.ok_or("Cargo succeeded without reporting the bridge executable")?;
 
-    let status = Command::new(executable)
+    let benchmark = measured_bench(&runtime);
+    let color = color_enabled(
+        options.color,
+        io::stdout().is_terminal(),
+        std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()),
+        std::env::var_os("TERM").is_some_and(|term| term == "dumb"),
+    );
+    let mut command = Command::new(executable);
+    command
         .args(runtime)
         .arg("--report-dir")
         .arg(target_dir.join("criterion").join(package_name))
+        .arg("--color")
+        .arg(if color { "always" } else { "never" });
+    if benchmark {
+        return run_benchmarks(&mut command);
+    }
+
+    let status = command
         .status()
         .map_err(|e| format!("run generated bridge: {e}"))?;
     Ok(status.code().unwrap_or(1))
@@ -387,6 +553,77 @@ pub fn main_entry(cargo_subcommand: bool) -> i32 {
         Err(error) => {
             eprintln!("error: {error}");
             1
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn benchmark_color_respects_terminal_and_explicit_choices() {
+        let cases = [
+            (ColorChoice::Auto, true, false, false, true),
+            (ColorChoice::Auto, false, false, false, false),
+            (ColorChoice::Auto, true, true, false, false),
+            (ColorChoice::Auto, true, false, true, false),
+            (ColorChoice::Always, false, true, true, true),
+            (ColorChoice::Never, true, false, false, false),
+        ];
+
+        for (choice, terminal, no_color, dumb, expected) in cases {
+            let actual = color_enabled(choice, terminal, no_color, dumb);
+
+            assert_eq!(actual, expected, "{choice:?} {terminal} {no_color} {dumb}");
+        }
+    }
+
+    #[test]
+    fn benchmark_output_mode_respects_option_values_and_smoke() {
+        let cases: &[(&[&str], bool)] = &[
+            (&["bench"], true),
+            (&["--day", "1", "bench", "--filter=solver/"], true),
+            (&["bench", "--smoke"], false),
+            (&["--smoke", "bench"], false),
+            (&["run", "--day", "1", "--input", "bench"], false),
+            (
+                &["run", "--day", "1", "--part", "1", "--solution", "bench"],
+                false,
+            ),
+            (&["bench", "--filter", "bench"], true),
+            (&["list"], false),
+            (&[], false),
+        ];
+
+        for (args, expected) in cases {
+            let args: Vec<_> = args.iter().map(OsString::from).collect();
+
+            let actual = measured_bench(&args);
+
+            assert_eq!(actual, *expected, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn criterion_status_filter_preserves_diagnostics() {
+        type StatusCase = (&'static [u8], Option<(&'static str, bool)>);
+        let cases: &[StatusCase] = &[
+            (b"Benchmarking solver/day1/part1/default\n", Some(("starting", true))),
+            (b"Benchmarking generator/day1/default: Warming up for 10.000 ms\n", Some(("warming up", false))),
+            (b"Benchmarking end-to-end/day1/part2/owned: Collecting 10 samples in estimated 20.000 ms (500k iterations)\n", Some(("measuring", false))),
+            (b"Benchmarking full-run/2025: Analyzing\n", Some(("analyzing", false))),
+            (b"Warning: unable to complete 10 samples\n", None),
+            (b"Benchmarking solver/day1/part1/default: unexpected failure\n", None),
+            (b"Benchmarking user operation failed\n", None),
+            (b"thread 'main' panicked: solver failed\n", None),
+            (b"\xff\n", None),
+        ];
+
+        for (line, expected) in cases {
+            let actual = benchmark_status(line);
+
+            assert_eq!(actual, *expected, "{line:?}");
         }
     }
 }

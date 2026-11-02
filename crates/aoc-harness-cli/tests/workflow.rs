@@ -207,6 +207,10 @@ fn installed_library_workflow() {
     for family in ["generator/", "solver/", "end-to-end/", "full-run/"] {
         assert!(output.contains(family));
     }
+    assert!(output.contains("Smoke: generator/day1/default\n"));
+    assert!(output.contains("Smoke: generator/day1/part2/default\n"));
+    assert!(output.contains("Smoke: generator/day1/part2/mutable\n"));
+    assert!(!output.contains("part0"));
     success(invoke(
         "cargo",
         &consumer,
@@ -228,10 +232,10 @@ fn installed_library_workflow() {
     ));
 
     // Actual Criterion measurement covers all ownership modes and every family.
-    let output = success(run(&[
-        "bench",
+    let benchmark = run(&[
         "--day",
         "1",
+        "bench",
         "--sample-size",
         "10",
         "--warm-up-time",
@@ -239,15 +243,58 @@ fn installed_library_workflow() {
         "--measurement-time",
         "0.02",
         "--filter",
-        "^(generator/day1/part0/default|solver/day1/part1/(default|cached)|solver/day1/part2/(owned|mutable)|end-to-end/day1/part2/owned|full-run/)",
+        "^(generator/day1/default|solver/day1/part1/(default|cached)|solver/day1/part2/(owned|mutable)|end-to-end/day1/part2/owned|full-run/)",
         "--profile",
         "release",
-    ]));
+    ]);
+    let diagnostics = String::from_utf8_lossy(&benchmark.stderr).into_owned();
+    let output = success(benchmark);
 
+    assert!(output.starts_with("Benchmark results\n\n"));
     assert!(output.contains("time:"));
     assert!(output.contains("Benchmark reports:"));
+    assert!(output.contains("generator/day1/default"));
+    assert!(!output.contains("part0"));
+    assert!(!output.contains('\x1b'));
+    assert!(diagnostics.contains("Running benchmarks..."));
+    assert!(!diagnostics
+        .lines()
+        .any(|line| line.starts_with("Benchmarking ")));
+    assert!(!diagnostics.contains('\r'));
+    assert!(!diagnostics.contains('\x1b'));
     let reports = target.join("criterion/winter-library");
     assert!(reports.join("report/index.html").exists());
+
+    let output = success(invoke(
+        "cargo",
+        &consumer,
+        &[
+            "aoc-harness",
+            "bench",
+            "--day",
+            "1",
+            "--part",
+            "2",
+            "--solution",
+            "owned",
+            "--filter",
+            "^solver/",
+            "--color=always",
+            "--sample-size",
+            "10",
+            "--warm-up-time",
+            "0.01",
+            "--measurement-time",
+            "0.02",
+        ],
+        &target,
+        &installed,
+    ));
+
+    assert!(output.starts_with("Benchmark results\n\n"));
+    assert!(output.contains("\x1b["));
+    assert!(output.contains("time:"));
+    assert!(output.contains("Benchmark reports:"));
 
     failure(
         run(&[
@@ -398,6 +445,58 @@ fn installed_library_workflow() {
         fs::write(&source, format!("use aoc_harness::aoc;\n{functions}\naoc_harness::aoc_lib! {{ year = 2025 }}\n")).unwrap();
         failure(run(&["list", "--profile", "dev"]), expected);
     }
+
+    // A failure inside Criterion must preserve buffered output and live diagnostics.
+    fs::write(
+        &source,
+        r#"
+use aoc_harness::aoc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+#[aoc(day1, part1)]
+fn solver(raw: &str) -> usize {
+    println!("consumer output before measurement failure");
+    if CALLS.fetch_add(1, Ordering::SeqCst) > 0 {
+        eprintln!("consumer diagnostic before measurement failure");
+        panic!("measurement failure");
+    }
+
+    raw.len()
+}
+
+aoc_harness::aoc_lib! { year = 2025 }
+"#,
+    )
+    .unwrap();
+
+    let benchmark = run(&[
+        "bench",
+        "--day",
+        "1",
+        "--filter",
+        "^solver/",
+        "--warm-up-time",
+        "0.01",
+        "--measurement-time",
+        "0.02",
+        "--sample-size",
+        "10",
+    ]);
+    let output = String::from_utf8_lossy(&benchmark.stdout);
+    let diagnostics = String::from_utf8_lossy(&benchmark.stderr);
+
+    assert!(!benchmark.status.success());
+    assert!(output.starts_with("Benchmark output (incomplete)\n\n"));
+    assert!(output.contains("consumer output before measurement failure"));
+    assert!(!output.contains("Benchmark reports:"));
+    assert!(diagnostics.contains("consumer diagnostic before measurement failure"));
+    assert!(diagnostics.contains("panicked"));
+    assert!(diagnostics.contains("measurement failure"));
+    assert!(!diagnostics
+        .lines()
+        .any(|line| line.starts_with("Benchmarking ")));
 
     let workspace = temp.path().join("workspace with spaces");
     fs::create_dir_all(&workspace).unwrap();

@@ -203,7 +203,7 @@ compiled registrations and registers:
 
 | Family | Measurement and preparation |
 | --- | --- |
-| `generator/dayN/partP/name` | One parser call per iteration; each distinct registration appears once. `part0` denotes a day-level parser. Output cleanup is outside measurement. |
+| `generator/dayN/default` or `generator/dayN/partP/name` | One parser call per iteration; each distinct registration appears once. Day-level parsers use `default`; part and variant overrides include their part number. Output cleanup is outside measurement. |
 | `solver/dayN/partP/name` | One solver call; preparation and external cleanup are outside measurement. |
 | `end-to-end/dayN/partP/name` | Fresh generation, solving, and cleanup for that variant. |
 | `full-run/YEAR[-day-N[-part-P]]` | A complete pass through the scope's default solutions, including all parsing and cleanup. No nested phase timers. |
@@ -241,6 +241,20 @@ positive seconds. Smoke mode executes each matching family once without
 statistical measurement or report generation. It is separate from a real
 shortened Criterion run, which exercises the batched measurement loops.
 
+The CLI shows one updating progress line in a terminal, then prints the benchmark
+results together after measurement finishes. Redirected output contains one
+`Running benchmarks...` notice and the final results, without Criterion's
+per-benchmark warmup, sampling, and analysis messages. Warnings and errors are
+forwarded immediately. If a benchmark fails, captured output is still shown and
+the command exits unsuccessfully. Smoke mode continues to list the families it
+checks.
+
+Benchmark results use Criterion's colors when stdout is a terminal, even though
+results are collected before printing. Redirected output stays plain by default.
+Use `--color always` to preserve colors through a pipe or `--color never` to
+disable them. Automatic color respects `NO_COLOR` and `TERM=dumb`; an explicit
+color choice takes precedence.
+
 Reports go to `<target-dir>/criterion/<consumer-package>/`, printed after a
 successful measurement. Open `report/index.html` for the combined HTML report;
 individual benchmark directories contain `new/estimates.json`, samples, and
@@ -253,7 +267,7 @@ fixture were:
 
 | Benchmark | Mean estimate |
 | --- | --- |
-| `generator/day1/part0/default` | 32 ns |
+| `generator/day1/default` | 32 ns |
 | `solver/day1/part2/owned` | 17 ns |
 | `full-run/2025-day-1` | 47 ns |
 

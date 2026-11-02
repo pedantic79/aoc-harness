@@ -104,12 +104,11 @@ impl Registration {
     }
 
     fn label(&self) -> String {
-        format!(
-            "day{}/part{}/{}",
-            self.day,
-            self.part.unwrap_or(0),
-            self.name.as_deref().unwrap_or("default")
-        )
+        let name = self.name.as_deref().unwrap_or("default");
+        match self.part {
+            Some(part) => format!("day{}/part{part}/{name}", self.day),
+            None => format!("day{}/{name}", self.day),
+        }
     }
 
     fn adapter(&self, generator: bool, function: &syn::Ident) -> syn::Ident {

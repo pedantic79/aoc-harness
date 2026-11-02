@@ -4,11 +4,12 @@ pub use aoc_harness_macros::{aoc, aoc_generator, aoc_lib};
 #[doc(hidden)]
 pub use criterion;
 
-use clap::{Parser, ValueEnum};
+use clap::{ColorChoice, Parser, ValueEnum};
 use std::{
     collections::BTreeMap,
     error::Error as StdError,
     fmt,
+    io::IsTerminal,
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -202,6 +203,9 @@ pub struct Options {
     /// Execute and validate every benchmark family once, without statistical measurement.
     #[arg(long)]
     pub smoke: bool,
+    /// Color benchmark results.
+    #[arg(long, value_enum, default_value_t = ColorChoice::Auto)]
+    pub color: ColorChoice,
     #[arg(long, hide = true)]
     pub report_dir: Option<PathBuf>,
 }
@@ -220,6 +224,7 @@ impl Default for Options {
             warm_up_time: 3.,
             measurement_time: 5.,
             smoke: false,
+            color: ColorChoice::Auto,
             report_dir: None,
         }
     }
@@ -429,8 +434,13 @@ impl Registry {
             "full-run/{}",
             scope(self.year, &defaults_options).replace(' ', "-")
         );
-        let generator_label =
-            |g: &Generator| format!("generator/day{}/part{}/{}", g.day, g.part, g.name);
+        let generator_label = |g: &Generator| {
+            if g.part == 0 {
+                format!("generator/day{}/{}", g.day, g.name)
+            } else {
+                format!("generator/day{}/part{}/{}", g.day, g.part, g.name)
+            }
+        };
         let solution_label =
             |s: &Solution, phase: &str| format!("{phase}/day{}/part{}/{}", s.day, s.part, s.name);
         let count = generators
@@ -479,6 +489,15 @@ impl Registry {
             .clone()
             .unwrap_or_else(|| PathBuf::from(self.manifest_dir).join("target/criterion"));
         let mut criterion = criterion::Criterion::default()
+            .with_output_color(match options.color {
+                ColorChoice::Always => true,
+                ColorChoice::Never => false,
+                ColorChoice::Auto => {
+                    std::io::stdout().is_terminal()
+                        && std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty())
+                        && std::env::var_os("TERM").is_none_or(|term| term != "dumb")
+                }
+            })
             .output_directory(&report)
             .sample_size(options.sample_size as usize)
             .warm_up_time(Duration::from_secs_f64(options.warm_up_time))
