@@ -16,22 +16,22 @@ fn action_command(action: &'static str) -> Command {
     let (about, examples) = match action {
         "run" => (
             "Run solutions for the latest registered day by default",
-            "Examples:\n  aoc-harness run\n  aoc-harness run --days 1,3\n  aoc-harness run --all-days\n  aoc-harness run --day 4 --part 2 --solution flood_fill",
+            "Examples:\n  cargo aoc-harness run\n  cargo aoc-harness run --days 1,3\n  cargo aoc-harness run --all-days\n  cargo aoc-harness run --day 4 --part 2 --solution flood_fill",
         ),
         "list" => (
             "List all registered solution variants and mark their defaults; selects every day by default",
-            "Examples:\n  aoc-harness list\n  aoc-harness list --days 1,3\n  aoc-harness list --day 4 --part 2",
+            "Examples:\n  cargo aoc-harness list\n  cargo aoc-harness list --days 1,3\n  cargo aoc-harness list --day 4 --part 2",
         ),
         "bench" => (
             "Benchmark the latest registered day by default, including all variants and the full run",
-            "Examples:\n  aoc-harness bench\n  aoc-harness bench --days 1,3\n  aoc-harness bench --all-days\n  aoc-harness bench --day 4 --smoke\n  aoc-harness bench --filter '^solver/' --sample-size 20",
+            "Examples:\n  cargo aoc-harness bench\n  cargo aoc-harness bench --days 1,3\n  cargo aoc-harness bench --all-days\n  cargo aoc-harness bench --day 4 --smoke\n  cargo aoc-harness bench --filter '^solver/' --sample-size 20",
         ),
         _ => unreachable!("known command"),
     };
 
     let mut command = BuildOptions::command()
         .name(action)
-        .bin_name(format!("aoc-harness {action}"))
+        .bin_name(format!("cargo aoc-harness {action}"))
         .about(about)
         .after_help(format!(
             "{examples}\n\nAll options may appear before or after the command."
@@ -116,10 +116,10 @@ pub(super) fn command(action: Option<&str>) -> Command {
         Some("bench") => action_command("bench"),
         _ => action_command("run")
             .name("aoc-harness")
-            .bin_name("aoc-harness")
+            .bin_name("cargo aoc-harness")
             .about("Run a library-only Advent of Code consumer")
             .after_help(
-                "Omit the command to run the latest registered day.\nUse 'aoc-harness <COMMAND> --help' for command-specific options and examples.\nAll options may appear before or after the command.",
+                "Omit the command to run the latest registered day.\nUse 'cargo aoc-harness <COMMAND> --help' for command-specific options and examples.\nAll options may appear before or after the command.",
             )
             .subcommand(action_command("run"))
             .subcommand(action_command("list"))

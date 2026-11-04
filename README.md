@@ -14,15 +14,15 @@ export CARGO_TARGET_DIR="$PWD/target"
 cargo install --path crates/aoc-harness-cli --root "$PWD/target/install" --locked
 export PATH="$PWD/target/install/bin:$PATH"
 
-aoc-harness list --manifest-path fixtures/library/Cargo.toml
-aoc-harness run --manifest-path fixtures/library/Cargo.toml
+cargo aoc-harness list --manifest-path fixtures/library/Cargo.toml
+cargo aoc-harness run --manifest-path fixtures/library/Cargo.toml
 cargo aoc-harness run --manifest-path fixtures/library/Cargo.toml --all-days
 cargo aoc-harness run --manifest-path fixtures/library/Cargo.toml --day 1,3
 cargo aoc-harness run --manifest-path fixtures/library/Cargo.toml --day 1
-aoc-harness run --manifest-path fixtures/library/Cargo.toml --day 1 --part 2 --solution mutable
-aoc-harness run --manifest-path fixtures/library/Cargo.toml --day 1 --all-solutions
-aoc-harness bench --manifest-path fixtures/library/Cargo.toml --smoke
-aoc-harness bench --manifest-path fixtures/library/Cargo.toml --day 1 \
+cargo aoc-harness run --manifest-path fixtures/library/Cargo.toml --day 1 --part 2 --solution mutable
+cargo aoc-harness run --manifest-path fixtures/library/Cargo.toml --day 1 --all-solutions
+cargo aoc-harness bench --manifest-path fixtures/library/Cargo.toml --smoke
+cargo aoc-harness bench --manifest-path fixtures/library/Cargo.toml --day 1 \
   --sample-size 10 --warm-up-time 0.05 --measurement-time 0.1
 ```
 
@@ -110,7 +110,7 @@ mod day01;
 aoc_harness::aoc_lib! { year = 2025 }
 ```
 
-Add `input/2025/day1.txt`, then run `aoc-harness run` from the consumer directory.
+Add `input/2025/day1.txt`, then run `cargo aoc-harness run` from the consumer directory.
 Omitting `run` has the same behavior. Inputs are relative to the **consumer
 manifest**, even though the executable lives elsewhere. Trailing `\n` characters
 are removed; spaces, carriage returns, and other whitespace are preserved.
@@ -152,11 +152,11 @@ enabled by features. Use `--day 1,3` (also `--days 1,3`) or repeat
 options.
 
 ```sh
-aoc-harness run --all-days
-aoc-harness run --days 1,3
-aoc-harness run --day 4 --part 2 --solution flood_fill
-aoc-harness run --day 4 --all-solutions
-aoc-harness list --day 4
+cargo aoc-harness run --all-days
+cargo aoc-harness run --days 1,3
+cargo aoc-harness run --day 4 --part 2 --solution flood_fill
+cargo aoc-harness run --day 4 --all-solutions
+cargo aoc-harness list --day 4
 ```
 
 Comparison totals are labeled **Comparison run**. Filtered footers identify their
@@ -165,17 +165,17 @@ partial timings, and never prints a successful full-run total.
 
 ## Cargo integration
 
-Use `aoc-harness --help` for the command overview. `cargo aoc-harness run --help`,
+Use `cargo aoc-harness --help` for the command overview. `cargo aoc-harness run --help`,
 `list --help`, and `bench --help` each show their own options and examples. Help
 works outside a consumer project without invoking Cargo or building a bridge.
 
-Both `aoc-harness` and `cargo aoc-harness` support:
+`cargo aoc-harness` supports:
 
 ```sh
-aoc-harness run --manifest-path ../solutions/Cargo.toml --package my-solutions
-aoc-harness run --features fast,simd --no-default-features
-aoc-harness list --all-features --profile dev
-aoc-harness run --profile my-custom-profile --target-dir "build directory"
+cargo aoc-harness run --manifest-path ../solutions/Cargo.toml --package my-solutions
+cargo aoc-harness run --features fast,simd --no-default-features
+cargo aoc-harness list --all-features --profile dev
+cargo aoc-harness run --profile my-custom-profile --target-dir "build directory"
 ```
 
 The default profile is `release`. The CLI uses `cargo metadata --format-version 1`
@@ -246,11 +246,11 @@ prepare fresh input. Before measuring, all required generators and solvers are
 validated once; a subsequent measurement-loop error aborts the process.
 
 ```sh
-aoc-harness bench --day 4 --part 2 --solution flood_fill
-aoc-harness bench --filter '^solver/' --sample-size 20 \
+cargo aoc-harness bench --day 4 --part 2 --solution flood_fill
+cargo aoc-harness bench --filter '^solver/' --sample-size 20 \
   --warm-up-time 0.1 --measurement-time 0.2
-aoc-harness bench --all-days
-aoc-harness bench --smoke
+cargo aoc-harness bench --all-days
+cargo aoc-harness bench --smoke
 ```
 
 `--filter` is a regex over family names. Sample size is at least 10; times are
@@ -307,7 +307,7 @@ cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo test --manifest-path fixtures/library/Cargo.toml --lib
-python3 scripts/validate_2025.py --cli target/install/bin/aoc-harness
+python3 scripts/validate_2025.py --cli target/install/bin/cargo-aoc-harness
 ```
 
 The workspace end-to-end test installs both commands into an isolated directory,

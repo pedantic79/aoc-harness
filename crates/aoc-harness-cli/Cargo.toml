@@ -3,7 +3,7 @@ name = "aoc-harness-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Standalone and Cargo commands for aoc-harness libraries"
+description = "Cargo subcommand for aoc-harness libraries"
 
 [dependencies]
 clap.workspace = true

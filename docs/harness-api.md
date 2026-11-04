@@ -118,25 +118,22 @@ Its total is labeled as a comparison run, so adding alternatives does not silent
 change the default full-year total. The runner does not pick a default based on
 which variant happened to benchmark fastest.
 
-## Runner and timing
+## Cargo subcommand and timing
 
-Keep the existing library declaration and add a small binary entry point:
+Keep the existing library declaration as the consumer's entry point:
 
 ```rust
 // src/lib.rs, after the day modules
 aoc_harness::aoc_lib! { year = 2025 }
-
-// src/main.rs
-aoc_harness::aoc_main! { lib = advent_of_code_2025 }
 ```
 
-Proposed commands:
+The CLI package supplies the `cargo-aoc-harness` executable, invoked through Cargo's subcommand convention:
 
 ```sh
-cargo run --release
-cargo run --release -- --day 4 --part 2
-cargo run --release -- --day 4 --part 2 --solution flood_fill
-cargo run --release -- --day 4 --all-solutions
+cargo aoc-harness run
+cargo aoc-harness run --day 4 --part 2
+cargo aoc-harness run --day 4 --part 2 --solution flood_fill
+cargo aoc-harness run --day 4 --all-solutions
 ```
 
 Run selected solutions sequentially in day/part/name order. Each result reports
@@ -202,8 +199,9 @@ timers. Validate generation and execution once before measurement, and abort a
 benchmark on an error.
 
 ```sh
-cargo bench --bench aoc
-cargo bench --bench aoc -- day04
+cargo aoc-harness bench
+cargo aoc-harness bench --day 4
+cargo aoc-harness bench --day 4 --part 2 --solution flood_fill
 ```
 
 Criterion's [timing-loop guide](https://bheisler.github.io/criterion.rs/book/user_guide/timing_loops.html)

@@ -67,7 +67,7 @@ def main():
     day4.write_text(text)
     assert "inputs.to_vec()" not in function
 
-    cli = (args.cli or root / "target/debug/aoc-harness").resolve()
+    cli = (args.cli or root / "target/debug/cargo-aoc-harness").resolve()
     common = ["--manifest-path", str(destination / "Cargo.toml"), "--target-dir", str(root / "target"), "--profile", args.profile]
     if args.offline:
         common.append("--offline")

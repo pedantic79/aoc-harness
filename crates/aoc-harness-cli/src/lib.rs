@@ -620,9 +620,9 @@ fn run(options: BuildOptions, runtime: Vec<OsString>) -> Result<i32, String> {
     Ok(status.code().unwrap_or(1))
 }
 
-pub fn main_entry(cargo_subcommand: bool) -> i32 {
+pub fn main_entry() -> i32 {
     let mut args: Vec<_> = std::env::args_os().skip(1).collect();
-    if cargo_subcommand && args.first().is_some_and(|s| s == "aoc-harness") {
+    if args.first().is_some_and(|s| s == "aoc-harness") {
         args.remove(0);
     }
 
