@@ -1,0 +1,17 @@
+[package]
+name = "parity-fixture"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+aoc-harness = { path = "../../crates/aoc-harness" }
+
+[features]
+bonus = []
+
+[[bin]]
+name = "custom"
+path = "code/entry.rs"

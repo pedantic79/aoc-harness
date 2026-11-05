@@ -847,3 +847,456 @@ aoc_harness::aoc_lib! { year = 2025 }
     // Preserve a compile-time dependency on both shipped executable targets.
     assert!(!OsString::from(env!("CARGO_BIN_EXE_cargo-aoc-harness")).is_empty());
 }
+
+#[test]
+fn parity_commands_and_consumer_entry_points() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let target = root.join("target");
+    let temp = tempfile::Builder::new()
+        .prefix("parity workflow ")
+        .tempdir_in(&target)
+        .unwrap();
+    let consumer = temp.path().join("consumer with spaces");
+    copy_fixture(
+        &root.join("fixtures/parity"),
+        &consumer,
+        &root.join("crates/aoc-harness"),
+    );
+    let cli = env!("CARGO_BIN_EXE_cargo-aoc-harness");
+    let run = |args: &[&str]| invoke(cli, &consumer, args, &target, temp.path());
+    let cargo = |args: &[&str]| invoke("cargo", &consumer, args, &target, temp.path());
+    let before = snapshot(&consumer);
+
+    let output = success(run(&[
+        "run",
+        "-d",
+        "day1",
+        "--part",
+        "part1",
+        "--download",
+        "--offline",
+        "--profile",
+        "dev",
+    ]));
+
+    assert!(output.contains("1 cached, 0 downloaded, 0 failed"));
+    assert!(output.contains("Day 1 - Part 1: 2"));
+    let output = success(run(&[
+        "run",
+        "--features",
+        "bonus",
+        "--download",
+        "--offline",
+        "--profile",
+        "dev",
+    ]));
+
+    assert!(output.contains("Day 5 - Part 1"));
+    assert!(!output.contains("Day 4 - Part 1"));
+    let output = success(run(&[
+        "bench",
+        "--days",
+        "1,2,3,4",
+        "--download",
+        "--offline",
+        "--smoke",
+        "--profile",
+        "dev",
+    ]));
+
+    assert!(output.contains("4 cached, 0 downloaded, 0 failed"));
+    assert!(output.contains("Smoke: solver/day1/part2/default"));
+    assert!(output.contains("Smoke: solver/day1/part1/interior"));
+    assert_eq!(snapshot(&consumer), before);
+
+    // Exercise custom projections in actual Criterion batched measurement loops.
+    let output = success(run(&[
+        "bench",
+        "--day",
+        "1",
+        "--filter",
+        "^(generator/|solver/|end-to-end/|full-run/)",
+        "--sample-size",
+        "10",
+        "--warm-up-time",
+        "0.01",
+        "--measurement-time",
+        "0.02",
+    ]));
+
+    assert!(output.contains("time:"));
+    assert!(output.contains("solver/day1/part1/interior"));
+    assert!(output.contains("solver/day1/part2/owned"));
+    for (binary, day) in [
+        ("parity-fixture", "1"),
+        ("standalone", "1"),
+        ("nested", "5"),
+        ("custom", "3"),
+    ] {
+        for args in [
+            vec!["run", "--day", day],
+            vec!["list"],
+            vec!["bench", "--day", day, "--smoke"],
+        ] {
+            let mut command = vec!["run", "--quiet", "--bin", binary, "--"];
+            command.extend(args);
+
+            success(cargo(&command));
+        }
+    }
+    // Description must not load a missing input or call any generator/solver.
+    fs::remove_file(consumer.join("input/2025/day1.txt")).unwrap();
+    let output = success(cargo(&[
+        "run",
+        "--quiet",
+        "--bin",
+        "standalone",
+        "--",
+        "__describe",
+        "--protocol",
+        "1",
+        "bench",
+        "--day",
+        "day1",
+    ]));
+    let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+    assert_eq!(value["required_input_days"], serde_json::json!([1]));
+    assert_eq!(value["action"], "bench");
+    let failure_output = run(&[
+        "run",
+        "--day",
+        "1",
+        "--download",
+        "--offline",
+        "--profile",
+        "dev",
+    ]);
+
+    assert!(!String::from_utf8_lossy(&failure_output.stdout).contains("AOC 2025"));
+    failure(failure_output, "--offline prevents downloading");
+    fs::write(consumer.join("input/2025/day1.txt"), "alpha\nbeta\n").unwrap();
+
+    let source = consumer.join("src/lib.rs");
+    let original = fs::read_to_string(&source).unwrap();
+    fs::write(&source, "uncompilable Rust source").unwrap();
+    let output = success(run(&["input", "--year", "2025", "--day", "1", "--offline"]));
+
+    assert!(output.contains("1 cached"));
+    fs::write(&source, &original).unwrap();
+    let output = success(run(&["generate", "--days", "6,7", "--dry-run"]));
+
+    assert!(output.contains("+++ ") && output.contains("+mod day6;"));
+    assert_eq!(fs::read_to_string(&source).unwrap(), original);
+    assert!(!consumer.join("src/day6.rs").exists());
+    failure(
+        run(&[
+            "input",
+            "--year",
+            "2025",
+            "--day",
+            "6",
+            "--generate",
+            "--offline",
+        ]),
+        "--offline prevents downloading",
+    );
+    assert_eq!(fs::read_to_string(&source).unwrap(), original);
+    assert!(!consumer.join("src/day6.rs").exists());
+    success(run(&["generate", "--days", "6,7"]));
+    let generated = snapshot(&consumer);
+    success(run(&["generate", "--days", "7,6"]));
+
+    assert_eq!(snapshot(&consumer), generated);
+    success(cargo(&["check", "--all-targets", "--offline"]));
+    success(cargo(&["test", "--lib", "--offline"]));
+    // Run composition applies the scaffold before compiling the updated registry.
+    fs::write(consumer.join("input/2025/day8.txt"), "synthetic\n").unwrap();
+    failure(
+        run(&[
+            "run",
+            "--day",
+            "8",
+            "--generate",
+            "--download",
+            "--offline",
+            "--profile",
+            "dev",
+        ]),
+        "day 8 part 1 is not implemented",
+    );
+    assert!(consumer.join("src/day8.rs").exists());
+
+    // Runtime-dependent operations diagnose an old consumer; ordinary commands still work.
+    fs::write(
+        &source,
+        r#"
+pub fn __aoc_harness_main() -> i32 {
+    if std::env::args().any(|a| a == "__describe") {
+        eprintln!("unrecognized request");
+        return 2;
+    }
+    println!("legacy consumer executed");
+    0
+}
+"#,
+    )
+    .unwrap();
+    assert!(success(run(&["list", "--profile", "dev"])).contains("legacy consumer executed"));
+    failure(
+        run(&[
+            "run",
+            "--day",
+            "1",
+            "--download",
+            "--offline",
+            "--profile",
+            "dev",
+        ]),
+        "upgrade older consumers",
+    );
+}
+
+#[test]
+fn cli_preflight_and_session_status_work_outside_cargo() {
+    let temp = tempfile::tempdir().unwrap();
+    let cli = env!("CARGO_BIN_EXE_cargo-aoc-harness");
+    let token_path = temp.path().join(".adventofcode.session");
+    fs::write(&token_path, "abcdef012345\r\n").unwrap();
+    let original = fs::read(&token_path).unwrap();
+    let permissions = fs::metadata(&token_path).unwrap().permissions();
+    let call = |args: &[&str]| {
+        Command::new(cli)
+            .args(args)
+            .current_dir(temp.path())
+            .env("HOME", temp.path())
+            .env_remove("ADVENT_OF_CODE_SESSION")
+            .env("CARGO", temp.path().join("missing-cargo"))
+            .output()
+            .unwrap()
+    };
+
+    assert!(success(call(&["--version"])).contains(env!("CARGO_PKG_VERSION")));
+    assert!(success(call(&["-V"])).contains(env!("CARGO_PKG_VERSION")));
+    for args in [
+        vec!["input", "--help"],
+        vec!["generate", "--help"],
+        vec!["credentials", "--help"],
+        vec!["credentials", "status", "--help"],
+    ] {
+        success(call(&args));
+    }
+    let output = success(call(&["credentials", "status"]));
+
+    assert!(output.contains("loaded and validated locally"));
+    assert!(!output.contains("abcdef012345"));
+    assert_eq!(fs::read(&token_path).unwrap(), original);
+    assert_eq!(
+        fs::metadata(&token_path).unwrap().permissions(),
+        permissions
+    );
+    failure(
+        call(&["credentials", "set", "secret"]),
+        "unrecognized subcommand",
+    );
+    for args in [
+        vec!["run", "--generate"],
+        vec!["run", "--day", "1", "--session-file", "session"],
+        vec!["run", "--day", "1", "--input", "alternate", "--download"],
+        vec!["bench", "--open", "--smoke"],
+        vec!["input", "--all"],
+        vec!["input", "--year", "2025", "--all", "--day", "1"],
+        vec!["generate", "--day", "26"],
+    ] {
+        let output = call(&args);
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+
+        assert!(!output.status.success(), "{args:?}");
+        assert!(
+            !diagnostic.contains("cargo metadata"),
+            "preflight invoked Cargo: {diagnostic}"
+        );
+    }
+}
+
+#[test]
+fn adapter_diagnostics_and_measurement_only_none() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let target = root.join("target");
+    let temp = tempfile::Builder::new()
+        .prefix("adapter diagnostics ")
+        .tempdir_in(&target)
+        .unwrap();
+    let consumer = temp.path().join("consumer");
+    copy_fixture(
+        &root.join("fixtures/parity"),
+        &consumer,
+        &root.join("crates/aoc-harness"),
+    );
+    let cli = env!("CARGO_BIN_EXE_cargo-aoc-harness");
+    let source = consumer.join("src/lib.rs");
+    let run = |args: &[&str]| invoke(cli, &consumer, args, &target, temp.path());
+    for (functions, diagnostic) in [
+        ("#[aoc(day1, part1, input=\"borrow\")] fn solve(raw: &str) -> usize { raw.len() }", "requires a registered generator"),
+        ("#[aoc_generator(day1)] fn parse(raw: &str) -> String { raw.into() }\n#[aoc(day1, part1, input=\"borrow\")] fn solve(raw: String) -> usize { raw.len() }", "requires a reference argument"),
+        ("struct Owner; struct View;\n#[aoc_generator(day1)] fn parse(_: &str) -> Owner { Owner }\n#[aoc(day1, part1, input=\"borrow\")] fn solve(_: &View) -> usize { 0 }", "Borrow<View>"),
+        ("#[aoc(day1, part1)] fn solve(_: &str) -> Result<Option<usize>, std::io::Error> { Ok(Some(1)) }", "Display"),
+    ] {
+        fs::write(&source, format!("use aoc_harness::{{aoc,aoc_generator}};\n{functions}\naoc_harness::aoc_lib! {{ year=2025 }}\n")).unwrap();
+
+        failure(run(&["list", "--profile", "dev"]), diagnostic);
+    }
+    fs::write(
+        &source,
+        r#"
+use std::sync::atomic::{AtomicUsize, Ordering};
+static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+#[aoc_harness::aoc(day1, part1)]
+fn solve(_: &str) -> Option<usize> {
+    println!("optional measurement output");
+    if CALLS.fetch_add(1, Ordering::SeqCst) == 0 { Some(1) } else { None }
+}
+
+aoc_harness::aoc_lib! { year=2025 }
+"#,
+    )
+    .unwrap();
+
+    let output = run(&[
+        "bench",
+        "--day",
+        "1",
+        "--filter",
+        "^solver/",
+        "--open",
+        "--sample-size",
+        "10",
+        "--warm-up-time",
+        "0.01",
+        "--measurement-time",
+        "0.02",
+    ]);
+
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Benchmark output (incomplete)"));
+    failure(output, "solver: returned None");
+    // Smoke prevalidation catches None before announcing a successful family.
+    fs::write(&source, "#[aoc_harness::aoc(day1,part1)] fn solve(_: &str) -> Option<usize> { None }\naoc_harness::aoc_lib! { year=2025 }\n").unwrap();
+    let output = run(&["bench", "--day", "1", "--smoke", "--profile", "dev"]);
+
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("Smoke:"));
+    failure(output, "solver: returned None");
+}
+
+#[test]
+fn debug_symbols_override_profiles_without_changing_optimization() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let target = root.join("target");
+    let temp = tempfile::Builder::new()
+        .prefix("debug configuration ")
+        .tempdir_in(&target)
+        .unwrap();
+    let consumer = temp.path().join("consumer");
+    copy_fixture(
+        &root.join("fixtures/parity"),
+        &consumer,
+        &root.join("crates/aoc-harness"),
+    );
+    let manifest = consumer.join("Cargo.toml");
+    let original = fs::read_to_string(&manifest).unwrap();
+    fs::write(&manifest, format!("{original}\n[profile.release]\ndebug=0\nstrip='symbols'\n[profile.release.package.parity-fixture]\ndebug=0\nstrip='symbols'\n[profile.quick]\ninherits='release'\nopt-level=1\n")).unwrap();
+    fs::create_dir_all(consumer.join(".cargo")).unwrap();
+    fs::write(
+        consumer.join(".cargo/config.toml"),
+        "[profile.release.package.parity-fixture]\ndebug=0\nstrip='symbols'\n",
+    )
+    .unwrap();
+    let before = snapshot(&consumer);
+    let cli = env!("CARGO_BIN_EXE_cargo-aoc-harness");
+    let build = |profile| {
+        invoke(
+            cli,
+            &consumer,
+            &[
+                "run",
+                "--day",
+                "1",
+                "--part",
+                "1",
+                "--profile",
+                profile,
+                "--debug-info",
+                "--config",
+                "profile.release.debug=false",
+                "--config",
+                "term.verbose=true",
+            ],
+            &target,
+            temp.path(),
+        )
+    };
+
+    for (profile, optimization) in [("release", "opt-level=3"), ("quick", "opt-level=1")] {
+        let output = build(profile);
+        let diagnostics = String::from_utf8_lossy(&output.stderr);
+        let rustc = diagnostics
+            .lines()
+            .find(|line| line.contains("--crate-name parity_fixture"))
+            .unwrap_or_else(|| panic!("missing consumer compiler invocation: {diagnostics}"));
+
+        assert!(rustc.contains("debuginfo=2"), "{rustc}");
+        assert!(rustc.contains(optimization), "{rustc}");
+        assert!(!rustc.contains("strip=symbols"), "{rustc}");
+        success(output);
+    }
+
+    assert_eq!(snapshot(&consumer), before);
+    let mut checked = 0;
+    for path in fs::read_dir(target.join("aoc-harness"))
+        .unwrap()
+        .map(|p| p.unwrap().path().join("Cargo.toml"))
+    {
+        // The shared target can contain incomplete bridges from earlier builds.
+        let Ok(text) = fs::read_to_string(path) else {
+            continue;
+        };
+        let value: toml::Value = text.parse().unwrap();
+        if value["dependencies"]["consumer"]["path"].as_str() != consumer.to_str() {
+            continue;
+        }
+        let profiles = &value["profile"];
+        for (profile, opt) in [("release", None), ("quick", Some(1))] {
+            if profiles
+                .get(profile)
+                .and_then(|p| p.get("debug"))
+                .and_then(toml::Value::as_integer)
+                != Some(2)
+            {
+                continue;
+            }
+
+            assert_eq!(profiles[profile]["strip"].as_bool(), Some(false));
+            if let Some(opt) = opt {
+                assert_eq!(profiles[profile]["opt-level"].as_integer(), Some(opt));
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked >= 2);
+    failure(
+        build("unknown-profile"),
+        "requires a declared custom profile",
+    );
+}

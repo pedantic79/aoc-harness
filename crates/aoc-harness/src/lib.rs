@@ -1,6 +1,6 @@
 //! Runtime shared by typed solution adapters and the generated CLI bridge.
 
-pub use aoc_harness_macros::{aoc, aoc_generator, aoc_lib};
+pub use aoc_harness_macros::{aoc, aoc_generator, aoc_lib, aoc_main};
 #[doc(hidden)]
 pub use criterion;
 
@@ -39,6 +39,13 @@ impl Error {
     ) -> Self {
         Self::message(format!(
             "day {day} part {} [{name}] {phase}: {error}",
+            part.map(|p| p.to_string()).unwrap_or_else(|| "*".into())
+        ))
+    }
+
+    pub fn no_value(day: u8, part: Option<u8>, name: &str, phase: &str) -> Self {
+        Self::message(format!(
+            "day {day} part {} [{name}] {phase}: returned None",
             part.map(|p| p.to_string()).unwrap_or_else(|| "*".into())
         ))
     }
@@ -180,18 +187,18 @@ pub struct Options {
     #[arg(value_enum, default_value = "run")]
     pub action: Action,
     /// Select days (comma-separated or repeated); run and bench default to the latest registered day.
-    #[arg(long, visible_alias = "days", value_delimiter = ',', value_parser = clap::value_parser!(u8).range(1..=25))]
+    #[arg(short = 'd', long, visible_alias = "days", value_delimiter = ',', value_parser = parse_day)]
     pub day: Vec<u8>,
     /// Select every registered day instead of the latest day.
     #[arg(long, conflicts_with = "day")]
     pub all_days: bool,
-    #[arg(long, requires = "day", value_parser = clap::value_parser!(u8).range(1..=2))]
+    #[arg(long, requires = "day", value_parser = parse_part)]
     pub part: Option<u8>,
     #[arg(long, requires_all = ["day", "part"], conflicts_with = "all_solutions")]
     pub solution: Option<String>,
     #[arg(long)]
     pub all_solutions: bool,
-    #[arg(long, requires = "day", conflicts_with = "all_days")]
+    #[arg(short = 'i', long, requires = "day", conflicts_with = "all_days")]
     pub input: Option<PathBuf>,
     /// Regex over Criterion benchmark names.
     #[arg(long)]
@@ -233,6 +240,70 @@ impl Default for Options {
             report_dir: None,
         }
     }
+}
+
+/// Parse numeric and cargo-aoc-style selectors.
+pub fn parse_day(value: &str) -> Result<u8, String> {
+    selector(value, "day", 25)
+}
+
+pub fn parse_part(value: &str) -> Result<u8, String> {
+    selector(value, "part", 2)
+}
+
+fn selector(value: &str, prefix: &str, max: u8) -> Result<u8, String> {
+    value
+        .strip_prefix(prefix)
+        .unwrap_or(value)
+        .parse::<u8>()
+        .ok()
+        .filter(|n| (1..=max).contains(n))
+        .ok_or_else(|| format!("expected {prefix} in 1..={max}"))
+}
+
+/// Prefer the unpadded input, falling back only when it is absent.
+/// Permission and decoding failures must never be treated as cache misses.
+pub fn input_path(manifest: &std::path::Path, year: u16, day: u8) -> std::io::Result<PathBuf> {
+    let path = manifest.join(format!("input/{year}/day{day}.txt"));
+    match std::fs::symlink_metadata(&path) {
+        Ok(_) => Ok(path),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let padded = path.with_file_name(format!("day{day:02}.txt"));
+            match std::fs::symlink_metadata(&padded) {
+                Ok(_) => Ok(padded),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(path),
+                Err(e) => Err(e),
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
+pub struct ExecutionPlan<'a> {
+    pub selected: Vec<&'a Solution>,
+    pub defaults: Vec<&'a Solution>,
+    pub required: Vec<&'a Solution>,
+    pub generators: Vec<&'a Generator>,
+    filter: Option<regex::Regex>,
+    full_label: String,
+}
+
+impl ExecutionPlan<'_> {
+    fn matches(&self, label: &str) -> bool {
+        self.filter.as_ref().is_none_or(|f| f.is_match(label))
+    }
+}
+
+fn generator_label(g: &Generator) -> String {
+    if g.part == 0 {
+        format!("generator/day{}/{}", g.day, g.name)
+    } else {
+        format!("generator/day{}/part{}/{}", g.day, g.part, g.name)
+    }
+}
+
+fn solution_label(s: &Solution, phase: &str) -> String {
+    format!("{phase}/day{}/part{}/{}", s.day, s.part, s.name)
 }
 
 fn positive_seconds(value: &str) -> Result<f64, String> {
@@ -314,17 +385,15 @@ impl Registry {
             if inputs.contains_key(&solution.day) {
                 continue;
             }
-            let path = options.input.clone().unwrap_or_else(|| {
-                let path = PathBuf::from(self.manifest_dir)
-                    .join(format!("input/{}/day{}.txt", self.year, solution.day));
-                let padded_path = path.with_file_name(format!("day{:02}.txt", solution.day));
-
-                if !path.exists() && padded_path.exists() {
-                    padded_path
-                } else {
-                    path
-                }
-            });
+            let path = match &options.input {
+                Some(path) => path.clone(),
+                None => input_path(
+                    std::path::Path::new(self.manifest_dir),
+                    self.year,
+                    solution.day,
+                )
+                .map_err(|e| Error::message(format!("day {} input path: {e}", solution.day)))?,
+            };
             let raw = std::fs::read_to_string(&path).map_err(|e| {
                 Error::message(format!(
                     "day {} input {}: {e}",
@@ -338,7 +407,8 @@ impl Registry {
     }
 
     pub fn run(&self, options: &Options) -> Result<(), Error> {
-        let selected = self.select(options, false)?;
+        let plan = self.plan(options)?;
+        let selected = plan.selected;
         let inputs = self.load_inputs(&selected, options)?;
         let mut results = Vec::with_capacity(selected.len());
         let mut failure = None;
@@ -419,7 +489,19 @@ impl Registry {
         Ok(())
     }
 
-    pub fn bench(&self, options: &Options) -> Result<(), Error> {
+    pub fn plan(&self, options: &Options) -> Result<ExecutionPlan<'_>, Error> {
+        if !matches!(options.action, Action::Bench) {
+            let selected = self.select(options, matches!(options.action, Action::List))?;
+            return Ok(ExecutionPlan {
+                required: selected.clone(),
+                selected,
+                defaults: Vec::new(),
+                generators: Vec::new(),
+                filter: None,
+                full_label: String::new(),
+            });
+        }
+
         let selected = self.select(options, true)?;
         // Full-run benches always follow the runner's default selection within the scope.
         let defaults_options = Options {
@@ -432,7 +514,7 @@ impl Registry {
         required.extend(defaults.iter().copied());
         required.sort_by_key(|s| (s.day, s.part, s.name));
         required.dedup_by_key(|s| (s.day, s.part, s.name));
-        let inputs = self.load_inputs(&required, options)?;
+
         let generators: Vec<_> = self
             .generators
             .iter()
@@ -442,18 +524,9 @@ impl Registry {
                         .solution
                         .as_ref()
                         .is_none_or(|n| g.name == "default" || g.name == n)
-                    && inputs.contains_key(&g.day)
+                    && required.iter().any(|s| s.day == g.day)
             })
             .collect();
-
-        // A fallible parser or solver must succeed before Criterion starts measuring.
-        for solution in &required {
-            (solution.execute)(&inputs[&solution.day])
-                .map_err(|e| e.context(solution.day, solution.part, solution.name))?;
-        }
-        for generator in &generators {
-            (generator.check)(&inputs[&generator.day])?;
-        }
 
         let filter = options
             .filter
@@ -466,15 +539,6 @@ impl Registry {
             "full-run/{}",
             self.scope(&defaults_options).replace(' ', "-")
         );
-        let generator_label = |g: &Generator| {
-            if g.part == 0 {
-                format!("generator/day{}/{}", g.day, g.name)
-            } else {
-                format!("generator/day{}/part{}/{}", g.day, g.part, g.name)
-            }
-        };
-        let solution_label =
-            |s: &Solution, phase: &str| format!("{phase}/day{}/part{}/{}", s.day, s.part, s.name);
         let count = generators
             .iter()
             .filter(|g| matches(&generator_label(g)))
@@ -492,12 +556,73 @@ impl Registry {
             return Err(Error::message("no benchmarks match --filter"));
         }
 
+        Ok(ExecutionPlan {
+            selected,
+            defaults,
+            required,
+            generators,
+            filter,
+            full_label,
+        })
+    }
+
+    pub fn describe(&self, options: &Options) -> Result<serde_json::Value, Error> {
+        let plan = self.plan(options)?;
+        let mut days: Vec<_> = plan.required.iter().map(|s| s.day).collect();
+        days.sort_unstable();
+        days.dedup();
+        let identity =
+            |s: &&Solution| serde_json::json!({"day": s.day, "part": s.part, "name": s.name});
+
+        Ok(serde_json::json!({
+            "protocol": 1, "capabilities": ["input-plan-v1"], "year": self.year,
+            "manifest_dir": self.manifest_dir, "action": match options.action {
+                Action::Run => "run", Action::Bench => "bench", Action::List => "list",
+            },
+            "selection": plan.selected.iter().map(identity).collect::<Vec<_>>(),
+            "defaults": plan.defaults.iter().map(identity).collect::<Vec<_>>(),
+            "required_input_days": days,
+        }))
+    }
+
+    pub fn bench(&self, options: &Options) -> Result<(), Error> {
+        let plan = self.plan(options)?;
+        let inputs = self.load_inputs(&plan.required, options)?;
+
+        // Validate before Criterion measures, after planning has validated filters.
+        for solution in &plan.required {
+            (solution.execute)(&inputs[&solution.day])
+                .map_err(|e| e.context(solution.day, solution.part, solution.name))?;
+        }
+        for generator in &plan.generators {
+            (generator.check)(&inputs[&generator.day])?;
+        }
+
+        let matches = |label: &str| plan.matches(label);
+        let selected = &plan.selected;
+        let defaults = &plan.defaults;
+        let generators = &plan.generators;
+        let full_label = &plan.full_label;
+        let count = generators
+            .iter()
+            .filter(|g| matches(&generator_label(g)))
+            .count()
+            + selected
+                .iter()
+                .filter(|s| matches(&solution_label(s, "solver")))
+                .count()
+            + selected
+                .iter()
+                .filter(|s| matches(&solution_label(s, "end-to-end")))
+                .count()
+            + usize::from(matches(full_label));
+
         if options.smoke {
             for g in generators.iter().filter(|g| matches(&generator_label(g))) {
                 (g.check)(&inputs[&g.day])?;
                 println!("Smoke: {}", generator_label(g));
             }
-            for s in &selected {
+            for s in selected {
                 for phase in ["solver", "end-to-end"] {
                     if matches(&solution_label(s, phase)) {
                         (s.execute)(&inputs[&s.day])
@@ -506,8 +631,8 @@ impl Registry {
                     }
                 }
             }
-            if matches(&full_label) {
-                for s in &defaults {
+            if matches(full_label) {
+                for s in defaults {
                     (s.execute)(&inputs[&s.day])?;
                 }
                 println!("Smoke: {full_label}");
@@ -544,9 +669,9 @@ impl Registry {
         for solution in selected {
             (solution.bench)(&mut criterion, &inputs[&solution.day]);
         }
-        criterion.bench_function(&full_label, |b| {
+        criterion.bench_function(full_label, |b| {
             b.iter(|| {
-                for solution in &defaults {
+                for solution in defaults {
                     (solution.execute)(std::hint::black_box(&inputs[&solution.day]))
                         .unwrap_or_else(|e| panic!("{e}"));
                 }
@@ -579,7 +704,35 @@ impl Registry {
 }
 
 pub fn entry(registry: Registry) -> i32 {
-    let options = Options::parse();
+    let mut args: Vec<_> = std::env::args_os().collect();
+    if args.get(1).is_some_and(|arg| arg == "__describe") {
+        if args.get(2).is_none_or(|arg| arg != "--protocol")
+            || args.get(3).is_none_or(|arg| arg != "1")
+        {
+            eprintln!("error: unsupported describe protocol; expected --protocol 1");
+            return 1;
+        }
+        args.drain(1..4);
+        let options = match Options::try_parse_from(args) {
+            Ok(options) => options,
+            Err(error) => {
+                let _ = error.print();
+                return error.exit_code();
+            }
+        };
+        return match registry.describe(&options) {
+            Ok(description) => {
+                println!("{description}");
+                0
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+                1
+            }
+        };
+    }
+
+    let options = Options::parse_from(args);
     let result = match options.action {
         Action::Run => registry.run(&options),
         Action::List => registry.list(&options),
@@ -633,5 +786,82 @@ mod tests {
 
             assert!(result.is_err(), "unexpectedly accepted {args:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod plan_tests {
+    use super::*;
+
+    fn never_run(_: &str) -> Result<Invocation, Error> {
+        panic!("describe ran a solver")
+    }
+    fn never_execute(_: &str) -> Result<(), Error> {
+        panic!("describe executed a solver")
+    }
+    fn never_bench(_: &mut criterion::Criterion, _: &str) {
+        panic!("describe benchmarked")
+    }
+    const fn solution(day: u8, name: &'static str, named: bool) -> Solution {
+        Solution {
+            day,
+            part: 1,
+            name,
+            named,
+            explicit_default: false,
+            run: never_run,
+            execute: never_execute,
+            bench: never_bench,
+        }
+    }
+    static SOLUTIONS: [Solution; 3] = [
+        solution(1, "default", false),
+        solution(2, "default", false),
+        solution(2, "variant", true),
+    ];
+
+    #[test]
+    fn describe_validates_plans_without_input_or_user_work() {
+        let registry = Registry {
+            year: 2025,
+            manifest_dir: "/no/such/consumer",
+            solutions: &SOLUTIONS,
+            generators: &[],
+        };
+        let run = Options::default();
+        let bench = Options {
+            action: Action::Bench,
+            day: vec![2],
+            part: Some(1),
+            solution: Some("variant".into()),
+            ..Default::default()
+        };
+
+        let latest = registry.describe(&run).unwrap();
+        let variants = registry.describe(&bench).unwrap();
+
+        assert_eq!(latest["required_input_days"], serde_json::json!([2]));
+        assert_eq!(latest["selection"][0]["name"], "default");
+        assert_eq!(variants["selection"][0]["name"], "variant");
+        assert_eq!(variants["defaults"][0]["name"], "default");
+        assert_eq!(registry.plan(&bench).unwrap().required.len(), 2);
+        assert!(registry
+            .describe(&Options {
+                filter: Some("[".into()),
+                ..bench.clone()
+            })
+            .is_err());
+        assert!(registry
+            .describe(&Options {
+                filter: Some("no-family".into()),
+                ..bench
+            })
+            .is_err());
+        assert!(registry
+            .describe(&Options {
+                day: vec![25],
+                ..run
+            })
+            .is_err());
     }
 }

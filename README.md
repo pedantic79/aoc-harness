@@ -1,7 +1,8 @@
 # aoc-harness
 
 An ownership-aware Rust Advent of Code harness. Annotate a solution **library**;
-the CLI builds its runner and Criterion benchmarks automatically. Parsed input
+the CLI builds its runner and Criterion benchmarks automatically. Consumer-owned
+executables are also supported with `aoc_main!`. Parsed input
 can be borrowed, mutated, or consumed, and never needs to implement `Clone` or
 `'static`.
 
@@ -112,13 +113,16 @@ aoc_harness::aoc_lib! { year = 2025 }
 
 Add `input/2025/day1.txt`, then run `cargo aoc-harness run` from the consumer directory.
 Omitting `run` has the same behavior. Inputs are relative to the **consumer
-manifest**, even though the executable lives elsewhere. Trailing `\n` characters
-are removed; spaces, carriage returns, and other whitespace are preserved.
+manifest**, even though the executable lives elsewhere. Zero-padded names such as
+`day01.txt` are also supported; `day1.txt` takes precedence when both exist.
+Trailing `\n` characters are removed; spaces, carriage returns, and other
+whitespace are preserved.
 `--input PATH` overrides the file for exactly one selected `--day`; an explicit
 relative path is relative to the invocation directory.
 
 Functions remain callable directly by ordinary Rust tests. Answers must implement
-`Display + 'static`. Generators and solvers may return `Result<T, E>` where `E`
+`Display + 'static`. Generators and solvers may return `Option<T>` or
+`Result<T, E>` where `E`
 implements `std::error::Error`; error text identifies the solution and phase, and
 the command returns a failure status. Error types may borrow from the input.
 
@@ -178,7 +182,12 @@ cargo aoc-harness list --all-features --profile dev
 cargo aoc-harness run --profile my-custom-profile --target-dir "build directory"
 ```
 
-The default profile is `release`. The CLI uses `cargo metadata --format-version 1`
+The default profile is `release`. `--debug-info` on run/bench requests full debug
+symbols and disables stripping for the selected profile and its package/build
+overrides, without changing optimization or consumer files. `--profile NAME`
+continues to select a Cargo profile. `--version` / `-V` works outside a project;
+`-d day4` and `--part part2` are selector conveniences. `-p` still selects a Cargo
+package. The CLI uses `cargo metadata --format-version 1`
 and requires `--package` when the workspace's default package selection is
 ambiguous. Custom library names and source paths, renamed runtime dependencies,
 and workspace-inherited runtime dependencies work. Features apply to the selected
@@ -193,10 +202,137 @@ loads configuration from that manifest's directory. `--config`, `--offline`, and
 `--locked` are available; locked builds require an up-to-date consumer lockfile.
 The bridge seeds resolution from that lockfile without changing it.
 
-Every command invokes Cargo to check freshness, including `list`. Executables are
+Run, list, and bench invoke Cargo to check freshness. Executables are
 located using Cargo JSON artifact messages; paths and child arguments never pass
 through a shell. Cargo diagnostics and nonzero child exit codes are propagated.
-The consumer's sources, manifest, and lockfile remain untouched.
+Ordinary execution preserves the consumer's sources, manifest, and lockfile.
+Only explicit generation commands edit source files.
+
+## Acquire inputs and start a day
+
+```sh
+cargo aoc-harness credentials status
+cargo aoc-harness input --year 2025 --day 4
+cargo aoc-harness input --year 2025 --all
+cargo aoc-harness generate --day 4 --dry-run
+cargo aoc-harness generate --day 4
+cargo aoc-harness input --year 2025 --day 4 --generate
+cargo aoc-harness run --day 4 --generate --download
+cargo aoc-harness bench --day 4 --download --open
+```
+
+Downloads are explicit: `input` fetches inputs, and `run`/`bench` fetch missing
+inputs only with `--download`. Run/bench select their year and days from compiled
+registrations using a versioned input plan, including feature-dependent latest
+days. All acquisitions finish before generators, solvers, validation, or timers
+start. An older runtime can still run normally; `--download` asks for an upgrade
+when it cannot describe its input plan. Explicit `input` needs Cargo metadata
+but never compiles solutions, so broken or unimplemented solvers do not block it.
+
+The CLI reads the user-managed `$HOME/.adventofcode.session` file shared with
+[aoc-cli](https://github.com/scarvalhojr/aoc-cli). Put only the raw session token
+in that file and use owner-only permissions (`chmod 600` on Unix). The harness
+never creates, modifies, or prints it. `credentials status` reports the selected
+source and local format validation; it does not check expiration with AoC.
+
+Resolution order is an explicit `--session-file PATH`, then nonblank
+`ADVENT_OF_CODE_SESSION`, then the home file. Relative explicit paths are relative
+to the invocation directory. Whitespace around the token is trimmed; the remaining
+value must be nonempty ASCII hexadecimal text, with no fixed length. A malformed
+selected source is an error. There are no project-local, TOML, legacy, or config
+folder credential fallbacks. `--session-file` on run/bench requires `--download`.
+Fully cached acquisitions do not load credentials or initialize HTTP.
+
+Input paths use the selected manifest directory and prefer `dayN.txt` over
+`dayNN.txt`, even for empty files. Existing files are validated and preserved;
+only missing inputs are downloaded. Requests use fixed `https://adventofcode.com`
+URLs, a session cookie, a project User-Agent, bounded timeouts, no redirects, and
+no automatic retries. Responses must be UTF-8 text, without HTML/login content,
+and at most **16 MiB**. New files preserve response bytes and terminal newlines,
+and use atomic publication without overwriting a concurrent writer. Days are
+processed sequentially; authentication and rate-limit errors stop the batch.
+Other failures are collected. Any failed input makes the command unsuccessful,
+while successful downloads remain cached. Keep personal inputs out of Git.
+
+Explicit input downloads accept repeated/comma-separated `--day` / `--days`.
+`--all` requires `--year`. The known calendars have 25 days for 2015–2024 and
+12 for 2025. For a current event, only released days are selected; future inputs
+are rejected locally. Unknown years require explicit days until their calendar
+is verified. Dates use fixed EST (UTC-5). Without a day, `input` selects today
+only inside the selected year's known December release window; otherwise supply
+`--day`. `--offline` prevents both Cargo and AoC traffic and permits cached inputs.
+`--input` / `-i` conflicts with `--download` and never becomes a download target.
+
+Generation works offline and creates `dayN.rs` beside the actual library source,
+including a custom `[lib].path`, then inserts `mod dayN;` before `aoc_lib!`.
+The template has a parser, both solvers returning clear not-implemented errors,
+and ignored example placeholders. It imports through the runtime alias exported
+by `aoc_lib!`, so renamed dependencies work. Repeating generation is a no-op.
+`--dry-run` prints a diff without source writes, builds, or downloads.
+
+The scaffolder preflights the whole batch, preserves existing matching padded
+modules, crate documentation, line endings, and root permissions, and refuses
+ambiguous inline/cfg/path modules, mismatched files, and source symlinks. It
+rechecks source contents before replacement and rolls back unchanged new files
+if the root edit fails. Concurrent changes are reported for manual resolution.
+Manifests and lockfiles remain untouched. `input --generate` preflights first,
+fetches inputs, then applies source changes only after successful acquisition.
+`run --generate` requires explicit days and applies the same plan before building;
+if requested, downloading then follows the newly compiled registry selection.
+
+## Optional returns and custom projections
+
+Generators and solvers can return `Option<T>` as well as `Result<T, E>`.
+`Some`/`Ok` supplies the value; `None` is a contextual harness error identifying
+the phase, day, part, and variant. Failures preserve attempted phase timings and
+stop execution. Benchmark prevalidation and measurement loops use the same
+normalization. Exactly one outer wrapper is interpreted: `Result<Option<T>, E>`
+produces an ordinary `Option<T>` parsed value. Successful answers still require
+`Display + 'static`; parsed values can borrow input and need not implement Clone.
+
+**Migration:** generators that deliberately return optional parsed values must
+add `#[aoc_generator(day4, output = "value")]`. Both annotations accept
+`output = "value"` to disable normalization. Only final path segments named
+`Option` or `Result` are recognized; arbitrary aliases are not inferred.
+
+Ordinary borrowing, slices, and deref coercions remain the default. For an owner
+with a custom projection, opt into `Borrow<T>` or `BorrowMut<T>` explicitly:
+
+```rust,ignore
+#[aoc(day4, part1, input = "borrow")]
+fn projected(grid: &GridView) -> usize { grid.cells.len() }
+
+#[aoc(day4, part2, input = "borrow")]
+fn projected_mut(grid: &mut GridView) -> usize { /* modify a fresh owner */ 0 }
+```
+
+The generator's owner must implement the corresponding trait. Unsized targets
+and borrowed lifetimes are supported. The option requires a generator and a
+reference argument. Mutable projections get a fresh owner in every invocation
+and benchmark iteration. For interior mutation through a shared projection,
+combine it with `bench_input = "fresh"`.
+
+## Own an executable
+
+A library can also supply `src/main.rs`:
+
+```rust,ignore
+aoc_harness::aoc_main! { lib = your_library }
+```
+
+Or place annotations directly in a standalone binary and finish its root with
+`aoc_harness::aoc_main! { year = 2025 }`. Cargo's binary identity selects
+`src/main.rs`, `src/bin/name.rs`, `src/bin/name/main.rs`, or an explicit
+`[[bin]].path`. Where identity is unavailable or ambiguous, supply
+`source = "relative/path.rs"` in the standalone declaration. Paths stay within
+the manifest directory. Declare one entry macro at the crate root.
+
+Both forms use the runtime's existing run/list/bench options and exit codes:
+`cargo run --release -- --all-days` or
+`cargo run --release -- bench --day 4 --smoke`. Inputs load at runtime from the
+consumer's manifest directory; direct executables remain local-only.
+The Cargo subcommand continues to require a library target. Both entry forms
+share the same direct-annotation discovery boundary described below.
 
 ## Timings and automatic benchmarks
 
@@ -275,7 +411,10 @@ disable them. Automatic color respects `NO_COLOR` and `TERM=dumb`; an explicit
 color choice takes precedence.
 
 Reports go to `<target-dir>/criterion/<consumer-package>/`, printed after a
-successful measurement. Open `report/index.html` for the combined HTML report;
+successful measurement. `bench --open` / `-o` opens that successful report; it
+conflicts with `--smoke` and never opens after a failed benchmark. An unavailable
+report or opener failure returns nonzero and distinguishes it from measurement
+failure. Open `report/index.html` for the combined HTML report;
 individual benchmark directories contain `new/estimates.json`, samples, and
 plots. Estimates are machine- and build-dependent; use release mode for useful
 comparisons. Bounded batching adds overhead for very short solver calls.
@@ -307,6 +446,8 @@ cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo test --manifest-path fixtures/library/Cargo.toml --lib
+cargo test --manifest-path fixtures/parity/Cargo.toml
+python3 scripts/validate_packages.py
 python3 scripts/validate_2025.py --cli target/install/bin/cargo-aoc-harness
 ```
 
@@ -347,10 +488,21 @@ This avoids proc-macro global state and expansion-order assumptions.
 
 Registrations synthesized by another macro, hidden behind `include!`, imported
 under different attribute names, or introduced through `cfg_attr` are not
-discovered. Use direct annotations and `#[cfg]` on functions/modules. Return types
-that are fallible must spell their final path segment `Result` (including
-`std::io::Result<T>`); arbitrary aliases to `Result` are not inferred. Registered
+discovered. Use direct annotations and `#[cfg]` on functions/modules. Fallible return types must spell their final path segment `Result` or `Option`
+(including `std::io::Result<T>` and `std::option::Option<T>`); arbitrary aliases
+are not inferred. `output = "value"` keeps an outer wrapper as an ordinary value. Registered
 functions take one argument and are synchronous, safe, and free of generic type
 or const parameters. Lifetime parameters and parsed values borrowing raw input
 are supported. Benchmarks require a runnable native target. This first version
 is installed and consumed from the checkout; no crates.io publication is assumed.
+
+
+The parity fixture and workflow tests additionally cover optional returns,
+custom Borrow/BorrowMut projections, both executable forms, cache-only execution,
+protocol errors, generation composition, synthetic HTTP redirects/statuses/body
+limits/timeouts, read-only credentials, and debug-profile overrides. Network
+tests use a private localhost server and synthetic tokens; no test contacts AoC
+or reads the user's session file. The package validation script checks unpacked
+archives, an installed CLI, generated templates, and versioned consumer
+dependencies through a temporary local patch registry, with no checkout paths.
+See [release preparation](docs/releasing.md) for the separate publication step.

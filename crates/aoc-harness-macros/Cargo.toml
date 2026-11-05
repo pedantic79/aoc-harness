@@ -3,6 +3,9 @@ name = "aoc-harness-macros"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+readme = "README.md"
+include = ["src/**", "templates/**", "Cargo.toml", "README.md", "LICENSE-*"]
 description = "Typed registrations for aoc-harness"
 
 [lib]

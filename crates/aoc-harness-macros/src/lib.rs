@@ -15,6 +15,8 @@ struct Registration {
     name: Option<String>,
     default: bool,
     fresh: bool,
+    value_output: bool,
+    borrow: bool,
 }
 
 impl Registration {
@@ -27,6 +29,8 @@ impl Registration {
             name: None,
             default: false,
             fresh: false,
+            value_output: false,
+            borrow: false,
         };
 
         for (index, arg) in args.iter().enumerate() {
@@ -73,6 +77,18 @@ impl Registration {
                         ));
                     }
                     reg.fresh = true;
+                }
+                Meta::NameValue(value) if value.path.is_ident("output") => {
+                    if value.value != syn::parse_quote!("value") {
+                        return Err(syn::Error::new_spanned(value, "output must be \"value\""));
+                    }
+                    reg.value_output = true;
+                }
+                Meta::NameValue(value) if value.path.is_ident("input") && !generator => {
+                    if value.value != syn::parse_quote!("borrow") {
+                        return Err(syn::Error::new_spanned(value, "input must be \"borrow\""));
+                    }
+                    reg.borrow = true;
                 }
                 _ => {
                     return Err(syn::Error::new_spanned(
@@ -141,7 +157,14 @@ fn argument(function: &ItemFn) -> syn::Result<&Type> {
     }
 }
 
-fn output(function: &ItemFn) -> syn::Result<(Type, bool)> {
+#[derive(Clone, Copy)]
+enum OutputKind {
+    Value,
+    Result,
+    Option,
+}
+
+fn output(function: &ItemFn, reg: &Registration) -> syn::Result<(Type, OutputKind)> {
     let ReturnType::Type(_, ty) = &function.sig.output else {
         return Err(syn::Error::new_spanned(
             &function.sig,
@@ -150,30 +173,91 @@ fn output(function: &ItemFn) -> syn::Result<(Type, bool)> {
     };
     if let Type::Path(path) = &**ty {
         if let Some(segment) = path.path.segments.last() {
-            if segment.ident == "Result" {
+            if !reg.value_output && (segment.ident == "Result" || segment.ident == "Option") {
                 if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
                     if let Some(syn::GenericArgument::Type(value)) = args.args.first() {
-                        return Ok((value.clone(), true));
+                        return Ok((
+                            value.clone(),
+                            if segment.ident == "Result" {
+                                OutputKind::Result
+                            } else {
+                                OutputKind::Option
+                            },
+                        ));
                     }
                 }
             }
         }
     }
-    Ok(((**ty).clone(), false))
+    Ok(((**ty).clone(), OutputKind::Value))
 }
 
-fn checked(call: Tokens, fallible: bool, reg: &Registration, phase: &str) -> Tokens {
-    if !fallible {
-        return call;
-    }
+fn checked(call: Tokens, kind: OutputKind, reg: &Registration, phase: &str) -> Tokens {
     let day = reg.day;
-    let part = reg.part;
-    let part = match part {
+    let part = match reg.part {
         Some(p) => quote!(Some(#p)),
         None => quote!(None),
     };
     let name = reg.name.as_deref().unwrap_or("default");
-    quote!(#call.map_err(|error| crate::__aoc_runtime::Error::phase(#day, #part, #name, #phase, error))?)
+    match kind {
+        OutputKind::Value => call,
+        OutputKind::Result => {
+            quote!(#call.map_err(|error| crate::__aoc_runtime::Error::phase(#day, #part, #name, #phase, error))?)
+        }
+        OutputKind::Option => {
+            quote!(#call.ok_or_else(|| crate::__aoc_runtime::Error::no_value(#day, #part, #name, #phase))?)
+        }
+    }
+}
+
+// `batched` means Criterion supplies a reference to the prepared owner.
+fn invocation(
+    arg: &Type,
+    reg: &Registration,
+    batched: bool,
+    generics: &syn::Generics,
+) -> syn::Result<Tokens> {
+    match arg {
+        Type::Reference(r) => {
+            let mutable = r.mutability.is_some();
+            let owner = match (mutable, batched) {
+                (true, true) => quote!(&mut *input),
+                (false, true) => quote!(&*input),
+                (true, false) => quote!(&mut input),
+                (false, false) => quote!(&input),
+            };
+            let mut target = (*r.elem).clone();
+            // Solver lifetime names belong to the original function. Let Rust
+            // infer those lifetimes in each generated adapter's local scope.
+            struct InferLifetimes<'a>(&'a syn::Generics);
+            impl syn::visit_mut::VisitMut for InferLifetimes<'_> {
+                fn visit_lifetime_mut(&mut self, lifetime: &mut syn::Lifetime) {
+                    if self
+                        .0
+                        .lifetimes()
+                        .any(|p| p.lifetime.ident == lifetime.ident)
+                    {
+                        *lifetime = syn::Lifetime::new("'_", lifetime.apostrophe);
+                    }
+                }
+            }
+            syn::visit_mut::VisitMut::visit_type_mut(&mut InferLifetimes(generics), &mut target);
+            Ok(if reg.borrow {
+                if mutable {
+                    quote!(::std::borrow::BorrowMut::<#target>::borrow_mut(#owner))
+                } else {
+                    quote!(::std::borrow::Borrow::<#target>::borrow(#owner))
+                }
+            } else {
+                owner
+            })
+        }
+        _ if reg.borrow => Err(syn::Error::new_spanned(
+            arg,
+            "input = \"borrow\" requires a reference argument and a generator",
+        )),
+        _ => Ok(quote!(input)),
+    }
 }
 
 #[proc_macro_attribute]
@@ -187,7 +271,7 @@ pub fn aoc_generator(args: TokenStream, item: TokenStream) -> TokenStream {
             .filter(|a| a.path().is_ident("cfg") || a.path().is_ident("cfg_attr"))
             .collect();
         let arg = argument(&function)?;
-        let (out, fallible) = output(&function)?;
+        let (out, fallible) = output(&function, &reg)?;
         let name = &function.sig.ident;
         let adapter = reg.adapter(true, name);
         let parse = format_ident!("parse");
@@ -262,26 +346,17 @@ pub fn aoc(args: TokenStream, item: TokenStream) -> TokenStream {
             .filter(|a| a.path().is_ident("cfg") || a.path().is_ident("cfg_attr"))
             .collect();
         let arg = argument(&function)?;
-        let (_, fallible) = output(&function)?;
+        let (_, fallible) = output(&function, &reg)?;
         let name = &function.sig.ident;
         let adapter = reg.adapter(false, name);
         let alias = reg.alias(name);
         let has_generator = format_ident!("{}_generated", alias);
-        let day = reg.day;
-        let part = reg.part.unwrap();
-        let variant = reg.name.as_deref().unwrap_or("default");
-        let invocation = match arg {
-            Type::Reference(r) if r.mutability.is_some() => quote!(&mut input),
-            Type::Reference(_) => quote!(&input),
-            _ => quote!(input),
-        };
-        let call = quote!(#name(::std::hint::black_box(#invocation)));
-        let solve = checked(call.clone(), fallible, &reg, "solver");
-        let timed_solve = if fallible {
-            quote!(#call.map_err(|e| crate::__aoc_runtime::Error::phase(#day, Some(#part), #variant, "solver", e).timings(generator, start.elapsed()))?)
-        } else {
-            call
-        };
+        let argument = invocation(arg, &reg, false, &function.sig.generics)?;
+        let call = quote!(#name(::std::hint::black_box(#argument)));
+        let solve = checked(call, fallible, &reg, "solver");
+        let timed_solve = quote!((|| -> ::std::result::Result<_, crate::__aoc_runtime::Error> {
+            ::std::result::Result::Ok(#solve)
+        })().map_err(|e| e.timings(generator, start.elapsed()))?);
         let label = reg.label();
         let solver_label = format!("solver/{label}");
         let end_label = format!("end-to-end/{label}");
@@ -291,11 +366,7 @@ pub fn aoc(args: TokenStream, item: TokenStream) -> TokenStream {
 
         let solver_loop = match arg {
             Type::Reference(r) if r.mutability.is_some() || reg.fresh => {
-                let invoke = if r.mutability.is_some() {
-                    quote!(&mut *input)
-                } else {
-                    quote!(&*input)
-                };
+                let invoke = invocation(arg, &reg, true, &function.sig.generics)?;
                 let solve = checked(
                     quote!(#name(::std::hint::black_box(#invoke))),
                     fallible,
@@ -464,17 +535,149 @@ fn scan(
     Ok(())
 }
 
+struct Entry {
+    year: Option<syn::Expr>,
+    lib: Option<syn::Path>,
+    source: Option<String>,
+}
+
+impl syn::parse::Parse for Entry {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+        let mut entry = Self {
+            year: None,
+            lib: None,
+            source: None,
+        };
+        while !input.is_empty() {
+            let key: syn::Ident = input.parse()?;
+            input.parse::<Token![=]>()?;
+            match key.to_string().as_str() {
+                "year" if entry.year.is_none() => entry.year = Some(input.parse()?),
+                "lib" if entry.lib.is_none() => entry.lib = Some(input.parse()?),
+                "source" if entry.source.is_none() => {
+                    entry.source = Some(input.parse::<syn::LitStr>()?.value())
+                }
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        key,
+                        "expected year, lib, or source, each once",
+                    ))
+                }
+            }
+            if !input.is_empty() {
+                input.parse::<Token![,]>()?;
+            }
+        }
+        Ok(entry)
+    }
+}
+
+fn binary_source(
+    dir: &Path,
+    manifest: &toml::Value,
+    explicit: Option<&str>,
+) -> syn::Result<PathBuf> {
+    let fail = |message: &str| syn::Error::new(proc_macro2::Span::call_site(), message);
+    if let Some(source) = explicit {
+        let path = Path::new(source);
+        if path.is_absolute()
+            || path
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(fail(
+                "source must be a relative path within the manifest directory",
+            ));
+        }
+        let root = dir
+            .join(path)
+            .canonicalize()
+            .map_err(|_| fail("cannot resolve source path"))?;
+        if !root.starts_with(
+            dir.canonicalize()
+                .map_err(|_| fail("cannot resolve manifest directory"))?,
+        ) {
+            return Err(fail("source must stay within the manifest directory"));
+        }
+        return Ok(root);
+    }
+
+    let name = std::env::var("CARGO_BIN_NAME").map_err(|_| fail("binary target identity is unavailable; supply aoc_main! { year = ..., source = \"relative/path.rs\" }"))?;
+    let mut candidates = Vec::new();
+    if let Some(bins) = manifest.get("bin").and_then(|v| v.as_array()) {
+        for bin in bins {
+            if bin.get("name").and_then(|v| v.as_str()) == Some(&name) {
+                if let Some(path) = bin.get("path").and_then(|v| v.as_str()) {
+                    candidates.push(dir.join(path));
+                }
+            }
+        }
+    }
+    if candidates.is_empty() {
+        if manifest
+            .get("package")
+            .and_then(|p| p.get("name"))
+            .and_then(|v| v.as_str())
+            == Some(&name)
+        {
+            candidates.push(dir.join("src/main.rs"));
+        }
+        candidates.push(dir.join(format!("src/bin/{name}.rs")));
+        candidates.push(dir.join(format!("src/bin/{name}/main.rs")));
+        candidates.retain(|p| p.is_file());
+    }
+    candidates.sort();
+    candidates.dedup();
+    if candidates.len() != 1 {
+        return Err(fail(
+            "binary source is ambiguous or unavailable; supply source = \"relative/path.rs\"",
+        ));
+    }
+    Ok(candidates.remove(0))
+}
+
 #[proc_macro]
 pub fn aoc_lib(input: TokenStream) -> TokenStream {
+    expand_entry(input, false)
+}
+
+#[proc_macro]
+pub fn aoc_main(input: TokenStream) -> TokenStream {
+    expand_entry(input, true)
+}
+
+fn expand_entry(input: TokenStream, executable: bool) -> TokenStream {
     let result = (|| -> syn::Result<Tokens> {
-        let declaration: syn::ExprAssign = syn::parse(input)?;
-        if declaration.left != Box::new(syn::parse_quote!(year)) {
-            return Err(syn::Error::new_spanned(declaration, "expected year = 2025"));
+        let entry: Entry = syn::parse(input)?;
+        if let Some(lib) = entry.lib {
+            if !executable || entry.year.is_some() || entry.source.is_some() {
+                return Err(syn::Error::new_spanned(
+                    lib,
+                    "use aoc_main! { lib = crate_path } without year/source",
+                ));
+            }
+            return Ok(quote! { fn main() { ::std::process::exit(#lib::__aoc_harness_main()); } });
         }
-        let year = declaration.right;
+        let year = entry.year.ok_or_else(|| {
+            syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "expected year = 2025 or lib = crate_path",
+            )
+        })?;
+        if !executable && entry.source.is_some() {
+            return Err(syn::Error::new_spanned(
+                year,
+                "source is only supported by standalone aoc_main!",
+            ));
+        }
         let dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
         let manifest: toml::Value = std::fs::read_to_string(dir.join("Cargo.toml"))
-            .unwrap()
+            .map_err(|e| {
+                syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    format!("cannot read manifest: {e}"),
+                )
+            })?
             .parse()
             .map_err(|e| {
                 syn::Error::new(
@@ -482,11 +685,17 @@ pub fn aoc_lib(input: TokenStream) -> TokenStream {
                     format!("invalid manifest: {e}"),
                 )
             })?;
-        let lib = manifest
-            .get("lib")
-            .and_then(|l| l.get("path"))
-            .and_then(|p| p.as_str())
-            .unwrap_or("src/lib.rs");
+        let root = if executable {
+            binary_source(&dir, &manifest, entry.source.as_deref())?
+        } else {
+            dir.join(
+                manifest
+                    .get("lib")
+                    .and_then(|l| l.get("path"))
+                    .and_then(|p| p.as_str())
+                    .unwrap_or("src/lib.rs"),
+            )
+        };
         let workspace = dir
             .ancestors()
             .filter_map(|path| {
@@ -520,19 +729,27 @@ pub fn aoc_lib(input: TokenStream) -> TokenStream {
             })
             .unwrap_or_else(|| "aoc_harness".into());
         let runtime = format_ident!("{}", runtime_name);
-        let root = dir.join(lib);
         let text = std::fs::read_to_string(&root).map_err(|e| {
             syn::Error::new(
                 proc_macro2::Span::call_site(),
-                format!("cannot read library: {e}"),
+                format!("cannot read registry source: {e}"),
             )
         })?;
+        let parsed = syn::parse_file(&text)?;
+        let declarations = parsed.items.iter().filter(|item| matches!(item, Item::Macro(m) if m.mac.path.segments.last().is_some_and(|s| s.ident == "aoc_lib" || s.ident == "aoc_main"))).count();
+        if declarations != 1 {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "declare exactly one aoc_lib! or standalone aoc_main! at the crate root",
+            ));
+        }
+
         let mut found = Vec::new();
         let mut sources = vec![root.clone()];
         scan(
             root.parent().unwrap(),
-            syn::parse_file(&text)?.items,
-            &[],
+            parsed.items,
+            &cfgs(&parsed.attrs),
             &mut found,
             &mut sources,
         )?;
@@ -652,7 +869,13 @@ pub fn aoc_lib(input: TokenStream) -> TokenStream {
                 },
                 _ => None,
             };
-            let fallback = if let Some(out) = raw {
+            let fallback = if reg.borrow {
+                let error = format!(
+                    "input = \"borrow\" requires a registered generator for {}",
+                    reg.label()
+                );
+                quote!(compile_error!(#error);)
+            } else if let Some(out) = raw {
                 let input = if out.to_string().contains("u8") {
                     quote!(raw.as_bytes())
                 } else {
@@ -680,7 +903,14 @@ pub fn aoc_lib(input: TokenStream) -> TokenStream {
         }
         let sources = sources.iter().map(|p| p.to_string_lossy().into_owned());
 
+        let main = executable.then(|| {
+            quote! {
+                fn main() { ::std::process::exit(__aoc_harness_main()); }
+            }
+        });
+
         Ok(quote! {
+            #main
             #[doc(hidden)]
             pub use ::#runtime as __aoc_runtime;
 
