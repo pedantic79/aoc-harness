@@ -542,6 +542,53 @@ fn installed_library_workflow() {
         "no benchmarks match",
     );
 
+    let unpadded_input = consumer.join("input/2025/day1.txt");
+    let padded_input = consumer.join("input/2025/day01.txt");
+    let original_input = fs::read(&unpadded_input).unwrap();
+    fs::write(&padded_input, "10\n20\n30\n").unwrap();
+
+    let output = success(run(&[
+        "run",
+        "--day",
+        "1",
+        "--part",
+        "1",
+        "--profile",
+        "dev",
+    ]));
+
+    assert!(output.contains("Day 1 - Part 1: 6\n"), "{output}");
+
+    fs::remove_file(&unpadded_input).unwrap();
+
+    let output = success(run(&[
+        "run",
+        "--day",
+        "1",
+        "--part",
+        "1",
+        "--profile",
+        "dev",
+    ]));
+
+    assert!(output.contains("Day 1 - Part 1: 60\n"), "{output}");
+
+    failure(
+        run(&[
+            "run",
+            "--day",
+            "1",
+            "--input",
+            "input/2025/day1.txt",
+            "--profile",
+            "dev",
+        ]),
+        "day 1 input input/2025/day1.txt",
+    );
+
+    fs::write(&unpadded_input, original_input).unwrap();
+    fs::remove_file(&padded_input).unwrap();
+
     assert_eq!(before, snapshot(&consumer), "CLI changed the consumer");
 
     success(invoke(

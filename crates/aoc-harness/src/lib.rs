@@ -315,8 +315,15 @@ impl Registry {
                 continue;
             }
             let path = options.input.clone().unwrap_or_else(|| {
-                PathBuf::from(self.manifest_dir)
-                    .join(format!("input/{}/day{}.txt", self.year, solution.day))
+                let path = PathBuf::from(self.manifest_dir)
+                    .join(format!("input/{}/day{}.txt", self.year, solution.day));
+                let padded_path = path.with_file_name(format!("day{:02}.txt", solution.day));
+
+                if !path.exists() && padded_path.exists() {
+                    padded_path
+                } else {
+                    path
+                }
             });
             let raw = std::fs::read_to_string(&path).map_err(|e| {
                 Error::message(format!(
