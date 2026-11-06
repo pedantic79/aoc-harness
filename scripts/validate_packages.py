@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Validate package archives and an installed CLI using only unpacked crate sources.
 
-Does not publish anything. The temporary patch registry stands in for the three
-coordinated releases while all third-party dependencies resolve normally.
+Does not publish anything. Temporary patches resolve first-party dependencies
+to unpacked packages, using each crate's version from Cargo metadata.
 """
 
 import json
@@ -19,6 +19,23 @@ def main():
     destination.mkdir(parents=True, exist_ok=True)
     target = root / "target"
     environment = dict(os.environ, CARGO_TARGET_DIR=str(target), CARGO_NET_OFFLINE="true")
+    names = ["aoc-harness-macros", "aoc-harness", "aoc-harness-cli"]
+    metadata = json.loads(subprocess.check_output(
+        ["cargo", "metadata", "--format-version", "1", "--no-deps", "--offline"],
+        cwd=root, env=environment, text=True,
+    ))
+    versions = {package["name"]: package["version"] for package in metadata["packages"]
+                if package["name"] in names}
+
+    # Package an isolated workspace so temporary patches cannot change the checkout's lockfile.
+    packaging = destination / "source"
+    if packaging.exists():
+        shutil.rmtree(packaging)
+    packaging.mkdir()
+    for name in ["Cargo.toml", "Cargo.lock", "LICENSE-MIT", "LICENSE-APACHE"]:
+        shutil.copy2(root / name, packaging / name)
+    shutil.copytree(root / "crates", packaging / "crates", ignore=shutil.ignore_patterns("target"))
+
     patches = destination / "patches.toml"
     unpacked = {}
 
@@ -34,12 +51,16 @@ def main():
         (destination / "Cargo.toml").write_text("[workspace]\nresolver = '2'\nmembers = " + json.dumps(members) + "\nexclude = ['consumer']\n")
 
     write_patches()
-    for name in ["aoc-harness-macros", "aoc-harness", "aoc-harness-cli"]:
-        command(["cargo", "package", "--package", name, "--allow-dirty", "--no-verify", "--offline", "--config", str(patches)])
-        archive = target / f"package/{name}-0.1.1.crate"
+    for name in names:
+        version = versions[name]
+        source = destination / f"{name}-{version}"
+        if source.exists():
+            shutil.rmtree(source)
+
+        command(["cargo", "package", "--package", name, "--allow-dirty", "--no-verify", "--offline", "--config", str(patches)], cwd=packaging)
+        archive = target / f"package/{name}-{version}.crate"
         with tarfile.open(archive) as package:
             package.extractall(destination, filter="data")
-        source = destination / f"{name}-0.1.1"
         unpacked[name] = source
         write_patches()
 
@@ -64,13 +85,13 @@ def main():
     (consumer / "src/bin").mkdir(parents=True)
     (consumer / ".cargo").mkdir()
     (consumer / ".cargo/config.toml").write_text(patches.read_text())
-    (consumer / "Cargo.toml").write_text('''[package]
+    (consumer / "Cargo.toml").write_text(f'''[package]
 name = "packaged-winter"
 version = "0.0.0"
 edition = "2021"
 [workspace]
 [dependencies]
-aoc-harness = "0.1.1"
+aoc-harness = "{versions['aoc-harness']}"
 ''')
     (consumer / "src/lib.rs").write_text('''#[aoc_harness::aoc(day1, part1)]
 fn solve(raw: &str) -> Option<usize> { Some(raw.len()) }
@@ -90,7 +111,7 @@ aoc_harness::aoc_main! { year = 2025 }
     for binary in ["packaged-winter", "standalone"]:
         command(["cargo", "run", "--quiet", "--offline", "--bin", binary, "--", "run", "--day", "1"], cwd=consumer)
 
-    (destination / "validation.json").write_text(json.dumps({"crates": list(unpacked), "installed_cli": str(cli), "status": "passed"}, indent=2) + "\n")
+    (destination / "validation.json").write_text(json.dumps({"crates": versions, "installed_cli": str(cli), "status": "passed"}, indent=2) + "\n")
     print(f"Package validation passed: {destination}")
 
 

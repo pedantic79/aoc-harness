@@ -7,7 +7,7 @@ Add the runtime to your `Cargo.toml`; it re-exports the macros:
 
 ```toml
 [dependencies]
-aoc-harness = "0.1"
+aoc-harness = "0.2"
 ```
 
 ```rust,ignore

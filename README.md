@@ -41,7 +41,7 @@ re-exports all the macros you need.
 
 ```toml
 [dependencies]
-aoc-harness = "0.1"
+aoc-harness = "0.2"
 ```
 
 Replace `src/lib.rs` with your day modules and event year:

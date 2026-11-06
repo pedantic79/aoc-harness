@@ -1,7 +1,6 @@
 # Releasing
 
-Update crate versions and dependency requirements. Keep the hardcoded versions
-in `scripts/validate_packages.py` in sync.
+Update the versions and dependency requirements of the crates being released.
 
 Run from the repository root:
 
