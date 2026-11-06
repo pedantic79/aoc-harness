@@ -36,12 +36,15 @@ cargo new --lib my-solutions
 cd my-solutions
 ```
 
-Add the [runtime](https://crates.io/crates/aoc-harness) to `Cargo.toml`. It
-re-exports all the macros you need.
+Add [`aoc-harness`](https://crates.io/crates/aoc-harness) to your solution
+project's `Cargo.toml`. It provides the runtime and re-exports `aoc`,
+`aoc_generator`, `aoc_lib`, and `aoc_main` from
+[`aoc-harness-macros`](https://crates.io/crates/aoc-harness-macros). Import these
+macros through `aoc_harness` in your solution code.
 
 ```toml
 [dependencies]
-aoc-harness = "0.2"
+aoc-harness = "0.2.1"
 ```
 
 Replace `src/lib.rs` with your day modules and event year:

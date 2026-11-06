@@ -1,13 +1,32 @@
 # aoc-harness-cli
 
-The `cargo aoc-harness` / `cargo-aoc-harness` command for annotated Advent of Code
-libraries. Provides run, list, Criterion benchmarks, profiling, input acquisition, and safe
-day scaffolding. Explicit downloads share the user-managed
-`$HOME/.adventofcode.session` raw token file with aoc-cli.
+This package contains the `cargo-aoc-harness` executable, which Cargo exposes as
+`cargo aoc-harness`. It runs and lists solutions from annotated Advent of Code
+libraries, provides Criterion benchmarks and profiling, downloads inputs, and
+generates day modules.
 
-Install from crates.io with `cargo install aoc-harness-cli --locked`.
-Run `cargo aoc-harness --help` for commands. Existing execution stays local-only
-unless `--download` is requested. Personal input files should stay out of Git.
+Install the CLI from [crates.io](https://crates.io/crates/aoc-harness-cli):
+
+```sh
+cargo install aoc-harness-cli --locked
+```
+
+Use [`aoc-harness`](https://crates.io/crates/aoc-harness) in your solution
+project's `Cargo.toml`:
+
+```toml
+[dependencies]
+aoc-harness = "0.2.1"
+```
+
+It provides the runtime and re-exports `aoc`, `aoc_generator`, `aoc_lib`, and
+`aoc_main` from [`aoc-harness-macros`](https://crates.io/crates/aoc-harness-macros).
+Import these macros through `aoc_harness` in your solution code.
+
+Run `cargo aoc-harness --help` for commands. Downloads happen only when requested
+with `input` or `--download`. They share the user-managed
+`$HOME/.adventofcode.session` raw token file with aoc-cli. Personal input files
+should stay out of Git.
 
 `cargo aoc-harness profile --day 4 --part 2` records one end-to-end workload with
 Samply for approximately 10 seconds. Override `--duration`, `--family`, or

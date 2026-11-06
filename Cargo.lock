@@ -78,7 +78,7 @@ dependencies = [
 
 [[package]]
 name = "aoc-harness"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aoc-harness-macros",
  "clap",
@@ -89,7 +89,7 @@ dependencies = [
 
 [[package]]
 name = "aoc-harness-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aoc-harness",
  "chrono",
@@ -107,7 +107,7 @@ dependencies = [
 
 [[package]]
 name = "aoc-harness-macros"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "proc-macro2",
  "quote",
