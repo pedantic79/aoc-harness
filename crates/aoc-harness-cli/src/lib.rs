@@ -14,6 +14,7 @@ mod calendar;
 mod command;
 mod credentials;
 mod input;
+mod profiling;
 mod reports;
 mod scaffold;
 
@@ -256,6 +257,7 @@ fn execute(request: command::Request) -> Result<i32, String> {
         session_file,
         open,
         smoke,
+        mut profiling,
     } = request;
     if action == Action::Credentials {
         let session = credentials::resolve(session_file.as_deref())?;
@@ -265,6 +267,11 @@ fn execute(request: command::Request) -> Result<i32, String> {
         );
         return Ok(0);
     }
+
+    let backend = profiling
+        .as_mut()
+        .map(profiling::ProfileOptions::preflight)
+        .transpose()?;
 
     let project = discover(&options)?;
     if matches!(action, Action::Input | Action::Generate) {
@@ -308,7 +315,7 @@ fn execute(request: command::Request) -> Result<i32, String> {
             .apply()?;
     }
     let executable = build_bridge(&options, &project)?;
-    if download {
+    if download || profiling.is_some() {
         let description = Command::new(&executable)
             .args(["__describe", "--protocol", "1"])
             .args(&runtime)
@@ -316,18 +323,48 @@ fn execute(request: command::Request) -> Result<i32, String> {
             .map_err(|e| format!("describe compiled input plan: {e}"))?;
         if !description.status.success() {
             let diagnostic = String::from_utf8_lossy(&description.stderr);
-            return Err(format!("cannot describe input plan; this operation requires an aoc-harness runtime with input-plan-v1 support (upgrade older consumers). {diagnostic}"));
+            let capability = if profiling.is_some() {
+                "profiling-v1"
+            } else {
+                "input-plan-v1"
+            };
+            return Err(format!("cannot describe compiled plan; this operation requires an aoc-harness runtime with {capability} support (upgrade older consumers). {diagnostic}"));
         }
         let (year, required) =
             input::validate_description(&description.stdout, &project.manifest_dir, action.name())?;
-        calendar::validate(year, &required, chrono::Utc::now())?;
-        input::acquire(
-            &project.manifest_dir,
-            year,
-            &required,
-            options.offline,
-            session_file.as_deref(),
-        )?;
+        if profiling.is_some() {
+            eprintln!(
+                "Profiling workload: {}",
+                profiling::workload(&description.stdout)?
+            );
+        }
+        if download {
+            calendar::validate(year, &required, chrono::Utc::now())?;
+            input::acquire(
+                &project.manifest_dir,
+                year,
+                &required,
+                options.offline,
+                session_file.as_deref(),
+            )?;
+        }
+    }
+
+    if let (Some(profiling), Some(backend)) = (&profiling, &backend) {
+        let validation = Command::new(&executable)
+            .args(&runtime)
+            .arg("--smoke")
+            .status()
+            .map_err(|e| format!("validate profiling workload: {e}"))?;
+        if !validation.success() {
+            return Ok(validation.code().unwrap_or(1));
+        }
+
+        let root = project
+            .target_dir
+            .join("aoc-harness/profiles")
+            .join(&project.package_name);
+        return backend.record(profiling, &root, &executable, &runtime);
     }
 
     let report_dir = project

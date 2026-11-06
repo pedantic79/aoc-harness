@@ -176,6 +176,27 @@ pub enum Action {
     Run,
     List,
     Bench,
+    Profile,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub enum ProfileFamily {
+    Generator,
+    Solver,
+    #[default]
+    EndToEnd,
+    FullRun,
+}
+
+impl ProfileFamily {
+    fn prefix(self) -> &'static str {
+        match self {
+            Self::Generator => "generator/",
+            Self::Solver => "solver/",
+            Self::EndToEnd => "end-to-end/",
+            Self::FullRun => "full-run/",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Parser)]
@@ -186,7 +207,7 @@ pub enum Action {
 pub struct Options {
     #[arg(value_enum, default_value = "run")]
     pub action: Action,
-    /// Select days (comma-separated or repeated); run and bench default to the latest registered day.
+    /// Select days (comma-separated or repeated); run, bench, and profile default to the latest registered day.
     #[arg(short = 'd', long, visible_alias = "days", value_delimiter = ',', value_parser = parse_day)]
     pub day: Vec<u8>,
     /// Select every registered day instead of the latest day.
@@ -214,6 +235,16 @@ pub struct Options {
     /// Execute and validate every benchmark family once, without statistical measurement.
     #[arg(long)]
     pub smoke: bool,
+    /// Workload family for profiling; exactly one workload must match.
+    #[arg(long, value_enum, default_value = "end-to-end")]
+    pub family: ProfileFamily,
+    /// Approximate profiling seconds, excluding compilation; minimum one second.
+    #[arg(long, default_value = "10", value_parser = profile_seconds)]
+    pub duration: f64,
+    #[arg(long, hide = true)]
+    pub profile_status: Option<PathBuf>,
+    #[arg(long, hide = true)]
+    pub profile_working_dir: Option<PathBuf>,
     /// Color benchmark results.
     #[arg(long, value_enum, default_value_t = ColorChoice::Auto)]
     pub color: ColorChoice,
@@ -236,6 +267,10 @@ impl Default for Options {
             warm_up_time: 3.,
             measurement_time: 5.,
             smoke: false,
+            family: ProfileFamily::EndToEnd,
+            duration: 10.,
+            profile_status: None,
+            profile_working_dir: None,
             color: ColorChoice::Auto,
             report_dir: None,
         }
@@ -286,11 +321,28 @@ pub struct ExecutionPlan<'a> {
     pub generators: Vec<&'a Generator>,
     filter: Option<regex::Regex>,
     full_label: String,
+    profile_family: Option<ProfileFamily>,
 }
 
 impl ExecutionPlan<'_> {
     fn matches(&self, label: &str) -> bool {
-        self.filter.as_ref().is_none_or(|f| f.is_match(label))
+        self.profile_family
+            .is_none_or(|f| label.starts_with(f.prefix()))
+            && self.filter.as_ref().is_none_or(|f| f.is_match(label))
+    }
+
+    fn labels(&self) -> Vec<String> {
+        self.generators
+            .iter()
+            .map(|g| generator_label(g))
+            .chain(
+                self.selected
+                    .iter()
+                    .flat_map(|s| [solution_label(s, "solver"), solution_label(s, "end-to-end")]),
+            )
+            .chain(std::iter::once(self.full_label.clone()))
+            .filter(|label| !label.is_empty() && self.matches(label))
+            .collect()
     }
 }
 
@@ -314,12 +366,23 @@ fn positive_seconds(value: &str) -> Result<f64, String> {
         .ok_or_else(|| "expected seconds between 0.000000001 and 86400".into())
 }
 
+pub fn profile_seconds(value: &str) -> Result<f64, String> {
+    value
+        .parse::<f64>()
+        .ok()
+        .filter(|n| n.is_finite() && *n >= 1. && *n <= 86400.)
+        .ok_or_else(|| "expected profiling seconds between 1 and 86400".into())
+}
+
 impl Registry {
     fn selected_days(&self, options: &Options) -> Vec<u8> {
         let mut days = options.day.clone();
         if days.is_empty()
             && !options.all_days
-            && matches!(options.action, Action::Run | Action::Bench)
+            && matches!(
+                options.action,
+                Action::Run | Action::Bench | Action::Profile
+            )
         {
             days.extend(self.solutions.iter().map(|s| s.day).max());
         }
@@ -490,7 +553,7 @@ impl Registry {
     }
 
     pub fn plan(&self, options: &Options) -> Result<ExecutionPlan<'_>, Error> {
-        if !matches!(options.action, Action::Bench) {
+        if !matches!(options.action, Action::Bench | Action::Profile) {
             let selected = self.select(options, matches!(options.action, Action::List))?;
             return Ok(ExecutionPlan {
                 required: selected.clone(),
@@ -499,10 +562,11 @@ impl Registry {
                 generators: Vec::new(),
                 filter: None,
                 full_label: String::new(),
+                profile_family: None,
             });
         }
 
-        let selected = self.select(options, true)?;
+        let selected = self.select(options, matches!(options.action, Action::Bench))?;
         // Full-run benches always follow the runner's default selection within the scope.
         let defaults_options = Options {
             solution: None,
@@ -534,36 +598,60 @@ impl Registry {
             .map(|s| regex::Regex::new(s))
             .transpose()
             .map_err(|e| Error::message(format!("benchmark filter: {e}")))?;
-        let matches = |label: &str| filter.as_ref().is_none_or(|f| f.is_match(label));
         let full_label = format!(
             "full-run/{}",
             self.scope(&defaults_options).replace(' ', "-")
         );
-        let count = generators
-            .iter()
-            .filter(|g| matches(&generator_label(g)))
-            .count()
-            + selected
-                .iter()
-                .filter(|s| matches(&solution_label(s, "solver")))
-                .count()
-            + selected
-                .iter()
-                .filter(|s| matches(&solution_label(s, "end-to-end")))
-                .count()
-            + usize::from(matches(&full_label));
-        if count == 0 {
-            return Err(Error::message("no benchmarks match --filter"));
-        }
-
-        Ok(ExecutionPlan {
+        let mut plan = ExecutionPlan {
             selected,
             defaults,
             required,
             generators,
             filter,
             full_label,
-        })
+            profile_family: matches!(options.action, Action::Profile).then_some(options.family),
+        };
+        let labels = plan.labels();
+        let count = labels.len();
+        if count == 0 {
+            return Err(Error::message(
+                "no benchmarks match --filter or the selected family",
+            ));
+        }
+
+        if let Some(family) = plan.profile_family {
+            if count != 1 {
+                return Err(Error::message(format!(
+                    "profiling requires exactly one workload, but {count} match: {}. Narrow --day/--part/--solution or --filter, or use --family full-run",
+                    labels.join(", ")
+                )));
+            }
+
+            match family {
+                ProfileFamily::Generator => {
+                    plan.generators
+                        .retain(|g| labels.contains(&generator_label(g)));
+                    plan.selected
+                        .retain(|s| plan.generators.iter().any(|g| g.day == s.day));
+                }
+                ProfileFamily::Solver | ProfileFamily::EndToEnd => {
+                    let phase = family.prefix().trim_end_matches('/');
+                    plan.selected
+                        .retain(|s| labels.contains(&solution_label(s, phase)));
+                    plan.generators.clear();
+                }
+                ProfileFamily::FullRun => {
+                    plan.selected = plan.defaults.clone();
+                    plan.generators.clear();
+                }
+            }
+            if family != ProfileFamily::FullRun {
+                plan.defaults.clear();
+            }
+            plan.required = plan.selected.clone();
+        }
+
+        Ok(plan)
     }
 
     pub fn describe(&self, options: &Options) -> Result<serde_json::Value, Error> {
@@ -575,13 +663,14 @@ impl Registry {
             |s: &&Solution| serde_json::json!({"day": s.day, "part": s.part, "name": s.name});
 
         Ok(serde_json::json!({
-            "protocol": 1, "capabilities": ["input-plan-v1"], "year": self.year,
+            "protocol": 1, "capabilities": ["input-plan-v1", "profiling-v1"], "year": self.year,
             "manifest_dir": self.manifest_dir, "action": match options.action {
-                Action::Run => "run", Action::Bench => "bench", Action::List => "list",
+                Action::Run => "run", Action::Bench => "bench", Action::List => "list", Action::Profile => "profile",
             },
             "selection": plan.selected.iter().map(identity).collect::<Vec<_>>(),
             "defaults": plan.defaults.iter().map(identity).collect::<Vec<_>>(),
             "required_input_days": days,
+            "profile_workloads": if matches!(options.action, Action::Profile) { plan.labels() } else { Vec::new() },
         }))
     }
 
@@ -590,9 +679,11 @@ impl Registry {
         let inputs = self.load_inputs(&plan.required, options)?;
 
         // Validate before Criterion measures, after planning has validated filters.
-        for solution in &plan.required {
-            (solution.execute)(&inputs[&solution.day])
-                .map_err(|e| e.context(solution.day, solution.part, solution.name))?;
+        if plan.profile_family != Some(ProfileFamily::Generator) {
+            for solution in &plan.required {
+                (solution.execute)(&inputs[&solution.day])
+                    .map_err(|e| e.context(solution.day, solution.part, solution.name))?;
+            }
         }
         for generator in &plan.generators {
             (generator.check)(&inputs[&generator.day])?;
@@ -603,21 +694,15 @@ impl Registry {
         let defaults = &plan.defaults;
         let generators = &plan.generators;
         let full_label = &plan.full_label;
-        let count = generators
-            .iter()
-            .filter(|g| matches(&generator_label(g)))
-            .count()
-            + selected
-                .iter()
-                .filter(|s| matches(&solution_label(s, "solver")))
-                .count()
-            + selected
-                .iter()
-                .filter(|s| matches(&solution_label(s, "end-to-end")))
-                .count()
-            + usize::from(matches(full_label));
+        let labels = plan.labels();
+        let count = labels.len();
 
         if options.smoke {
+            if plan.profile_family.is_some() {
+                println!("Profiling workload validated: {}", labels[0]);
+                return Ok(());
+            }
+
             for g in generators.iter().filter(|g| matches(&generator_label(g))) {
                 (g.check)(&inputs[&g.day])?;
                 println!("Smoke: {}", generator_label(g));
@@ -659,7 +744,13 @@ impl Registry {
             .sample_size(options.sample_size as usize)
             .warm_up_time(Duration::from_secs_f64(options.warm_up_time))
             .measurement_time(Duration::from_secs_f64(options.measurement_time));
-        if let Some(filter) = &options.filter {
+        if plan.profile_family.is_some() {
+            // Criterion 0.5 exposes this setter as a hidden API. Keep the
+            // version-specific profiling integration here, beside configuration.
+            criterion = criterion
+                .profile_time(Some(Duration::from_secs_f64(options.duration)))
+                .with_filter(format!("^{}$", regex::escape(&labels[0])));
+        } else if let Some(filter) = &options.filter {
             criterion = criterion.with_filter(filter);
         }
 
@@ -677,8 +768,10 @@ impl Registry {
                 }
             })
         });
-        criterion.final_summary();
-        println!("Benchmark reports: {}", report.display());
+        if plan.profile_family.is_none() {
+            criterion.final_summary();
+            println!("Benchmark reports: {}", report.display());
+        }
         Ok(())
     }
 
@@ -733,11 +826,33 @@ pub fn entry(registry: Registry) -> i32 {
     }
 
     let options = Options::parse_from(args);
-    let result = match options.action {
+    let result = if matches!(options.action, Action::Profile) {
+        options
+            .profile_working_dir
+            .as_ref()
+            .map_or(Ok(()), |directory| {
+                std::env::set_current_dir(directory)
+                    .map_err(|e| Error::message(format!("set profiling workload directory: {e}")))
+            })
+    } else {
+        Ok(())
+    };
+    let result = result.and_then(|()| match options.action {
         Action::Run => registry.run(&options),
         Action::List => registry.list(&options),
         Action::Bench => registry.bench(&options),
-    };
+        Action::Profile => registry.bench(&options),
+    });
+    let result = result.and_then(|()| {
+        if matches!(options.action, Action::Profile) && !options.smoke {
+            if let Some(path) = &options.profile_status {
+                std::fs::write(path, b"ok\n").map_err(|e| {
+                    Error::message(format!("write profiling completion status: {e}"))
+                })?;
+            }
+        }
+        Ok(())
+    });
     match result {
         Ok(()) => 0,
         Err(error) => {
@@ -863,5 +978,55 @@ mod plan_tests {
                 ..run
             })
             .is_err());
+    }
+
+    #[test]
+    fn profiling_selects_one_default_workload_and_only_its_required_inputs() {
+        let registry = Registry {
+            year: 2025,
+            manifest_dir: "/no/such/consumer",
+            solutions: &SOLUTIONS,
+            generators: &[],
+        };
+        let options = Options {
+            action: Action::Profile,
+            family: ProfileFamily::Solver,
+            ..Default::default()
+        };
+
+        let latest = registry.describe(&options).unwrap();
+        let filtered = registry
+            .describe(&Options {
+                all_days: true,
+                filter: Some("day1/".into()),
+                ..options.clone()
+            })
+            .unwrap();
+        let ambiguous = registry
+            .describe(&Options {
+                all_days: true,
+                ..options.clone()
+            })
+            .unwrap_err();
+        let full = registry
+            .describe(&Options {
+                all_days: true,
+                family: ProfileFamily::FullRun,
+                ..options
+            })
+            .unwrap();
+
+        assert_eq!(
+            latest["profile_workloads"],
+            serde_json::json!(["solver/day2/part1/default"])
+        );
+        assert_eq!(latest["selection"].as_array().unwrap().len(), 1);
+        assert_eq!(filtered["required_input_days"], serde_json::json!([1]));
+        assert!(ambiguous.to_string().contains("exactly one workload"));
+        assert_eq!(
+            full["profile_workloads"],
+            serde_json::json!(["full-run/2025"])
+        );
+        assert_eq!(full["required_input_days"], serde_json::json!([1, 2]));
     }
 }

@@ -1,3 +1,4 @@
+use super::profiling::{ProfileOptions, Profiler};
 use super::BuildOptions;
 use clap::{Arg, ArgAction, Command, CommandFactory, FromArgMatches};
 use std::{ffi::OsString, path::PathBuf};
@@ -7,6 +8,7 @@ pub(crate) enum Action {
     Run,
     List,
     Bench,
+    Profile,
     Input,
     Generate,
     Credentials,
@@ -18,6 +20,7 @@ impl Action {
             Self::Run => "run",
             Self::List => "list",
             Self::Bench => "bench",
+            Self::Profile => "profile",
             Self::Input => "input",
             Self::Generate => "generate",
             Self::Credentials => "credentials",
@@ -38,6 +41,7 @@ pub(crate) struct Request {
     pub session_file: Option<PathBuf>,
     pub open: bool,
     pub smoke: bool,
+    pub profiling: Option<ProfileOptions>,
 }
 
 fn flag(name: &'static str, help: &'static str) -> Arg {
@@ -73,13 +77,17 @@ fn action_command(action: Action) -> Command {
         Action::Run => "Run solutions for the latest registered day by default",
         Action::List => "List every registered day and mark default variants",
         Action::Bench => "Benchmark the latest registered day, including variants and the full run",
+        Action::Profile => "Profile one workload from the latest registered day by default",
         Action::Input => "Download missing puzzle inputs without compiling solutions",
         Action::Generate => {
             "Create day modules without credentials, network access, or compilation"
         }
         _ => unreachable!(),
     };
-    let execution = matches!(action, Action::Run | Action::List | Action::Bench);
+    let execution = matches!(
+        action,
+        Action::Run | Action::List | Action::Bench | Action::Profile
+    );
     let mut command = BuildOptions::command().name(name)
         .bin_name(format!("cargo aoc-harness {name}"))
         .about(about).version(env!("CARGO_PKG_VERSION"))
@@ -103,7 +111,7 @@ fn action_command(action: Action) -> Command {
         command =
             command.arg(flag("all-solutions", "Run every variant").conflicts_with("solution"));
     }
-    if matches!(action, Action::Run | Action::Bench) {
+    if matches!(action, Action::Run | Action::Bench | Action::Profile) {
         command = command
             .arg(flag(
                 "debug-info",
@@ -185,6 +193,48 @@ fn action_command(action: Action) -> Command {
                     .conflicts_with("smoke"),
             );
     }
+    if action == Action::Profile {
+        command = command
+            .after_help("Examples:\n  cargo aoc-harness profile --day 4 --part 2\n  cargo aoc-harness profile --day 4 --part 2 --family solver --profiler flamegraph\n  cargo aoc-harness profile --all-days --family full-run\n\nAll options may appear before or after the command.")
+            .next_help_heading("Profiling options")
+            .arg(
+                value(
+                    "profiler",
+                    "External profiler to launch; install it separately",
+                )
+                .value_parser(clap::value_parser!(Profiler))
+                .default_value("samply"),
+            )
+            .arg(
+                value(
+                    "duration",
+                    "Approximate workload seconds; an active solver call finishes normally",
+                )
+                .value_parser(aoc_harness::profile_seconds)
+                .default_value("10"),
+            )
+            .arg(
+                value("family", "Select exactly one workload from this family")
+                    .value_parser(clap::value_parser!(aoc_harness::ProfileFamily))
+                    .default_value("end-to-end"),
+            )
+            .arg(value(
+                "filter",
+                "Regex narrowing the selected workload family",
+            ))
+            .arg(
+                value(
+                    "output",
+                    "Recording path; defaults to a new directory under target/aoc-harness/profiles",
+                )
+                .short('o')
+                .value_parser(clap::value_parser!(PathBuf)),
+            )
+            .arg(value(
+                "template",
+                "xctrace recording template (default: Time Profiler)",
+            ));
+    }
     command
 }
 
@@ -196,10 +246,11 @@ fn seconds(value: &str) -> Result<f64, String> {
         .ok_or_else(|| "expected seconds between 0.000000001 and 86400".into())
 }
 
-const ACTIONS: [Action; 6] = [
+const ACTIONS: [Action; 7] = [
     Action::Run,
     Action::List,
     Action::Bench,
+    Action::Profile,
     Action::Input,
     Action::Generate,
     Action::Credentials,
@@ -296,7 +347,7 @@ pub(crate) fn parse(mut args: Vec<OsString>) -> Result<Request, clap::Error> {
     if build.profile.is_empty() {
         build.profile = "release".into();
     }
-    build.debug_info = get_flag("debug-info");
+    build.debug_info = action == Action::Profile || get_flag("debug-info");
     let mut session_file = get_path("session-file");
     if let Some(("status", status)) = matches.subcommand() {
         session_file = status.get_one::<PathBuf>("session-file").cloned();
@@ -328,10 +379,24 @@ pub(crate) fn parse(mut args: Vec<OsString>) -> Result<Request, clap::Error> {
         "solution",
         "filter",
         "input",
+        "duration",
+        "family",
     ] {
         if let Some(values) = matches.try_get_raw(name).ok().flatten() {
             runtime.push(format!("--{name}").into());
-            runtime.extend(values.map(OsString::from));
+            if action == Action::Profile && name == "input" {
+                let path = get_path("input").unwrap();
+                let path = if path.is_absolute() {
+                    path
+                } else {
+                    std::env::current_dir()
+                        .map_err(|e| clap::Error::raw(clap::error::ErrorKind::Io, e.to_string()))?
+                        .join(path)
+                };
+                runtime.push(path.into_os_string());
+            } else {
+                runtime.extend(values.map(OsString::from));
+            }
         }
     }
     if let Some(filter) = matches.try_get_one::<String>("filter").ok().flatten() {
@@ -349,6 +414,24 @@ pub(crate) fn parse(mut args: Vec<OsString>) -> Result<Request, clap::Error> {
             "--input requires exactly one selected day",
         ));
     }
+    let profiling = if action == Action::Profile {
+        let profiler = *matches.get_one::<Profiler>("profiler").unwrap();
+        let template = matches.get_one::<String>("template").cloned();
+        if template.is_some() && profiler != Profiler::Xctrace {
+            return Err(clap::Error::raw(
+                clap::error::ErrorKind::ArgumentConflict,
+                "--template requires --profiler xctrace",
+            ));
+        }
+        Some(ProfileOptions {
+            profiler,
+            output: get_path("output"),
+            template,
+        })
+    } else {
+        None
+    };
+
     Ok(Request {
         build,
         action,
@@ -362,6 +445,7 @@ pub(crate) fn parse(mut args: Vec<OsString>) -> Result<Request, clap::Error> {
         session_file,
         open: get_flag("open"),
         smoke: get_flag("smoke"),
+        profiling,
     })
 }
 
@@ -382,5 +466,59 @@ mod tests {
             request.runtime,
             ["run", "--day", "4", "--part", "2", "--input", "bench"].map(OsString::from)
         );
+    }
+
+    #[test]
+    fn profiling_defaults_to_ten_seconds_with_symbols_and_accepts_overrides() {
+        let parse_args = |args: &[&str]| parse(args.iter().map(OsString::from).collect());
+
+        let request = parse_args(&["profile", "--day", "4", "--part", "2"]).unwrap();
+        let overridden = parse_args(&[
+            "--duration",
+            "30",
+            "profile",
+            "--profiler",
+            "flamegraph",
+            "--family",
+            "solver",
+            "--profile",
+            "dev",
+        ])
+        .unwrap();
+
+        assert!(request.build.debug_info);
+        assert_eq!(request.build.profile, "release");
+        assert_eq!(request.profiling.unwrap().profiler, Profiler::Samply);
+        assert!(request
+            .runtime
+            .windows(2)
+            .any(|pair| pair == ["--duration", "10"]));
+        assert!(request
+            .runtime
+            .windows(2)
+            .any(|pair| pair == ["--family", "end-to-end"]));
+        assert_eq!(overridden.profiling.unwrap().profiler, Profiler::Flamegraph);
+        assert_eq!(overridden.build.profile, "dev");
+        assert!(overridden
+            .runtime
+            .windows(2)
+            .any(|pair| pair == ["--duration", "30"]));
+        assert!(overridden
+            .runtime
+            .windows(2)
+            .any(|pair| pair == ["--family", "solver"]));
+
+        for args in [
+            vec!["profile", "--duration", "0"],
+            vec!["profile", "--duration", "NaN"],
+            vec!["profile", "--duration", "inf"],
+            vec!["profile", "--duration", "86401"],
+            vec!["profile", "--template", "CPU Counters"],
+            vec!["profile", "--filter", "["],
+            vec!["run", "--duration", "10"],
+            vec!["profile", "--profiler", "unknown"],
+        ] {
+            assert!(parse_args(&args).is_err(), "unexpectedly accepted {args:?}");
+        }
     }
 }

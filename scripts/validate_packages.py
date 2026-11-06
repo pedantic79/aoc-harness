@@ -36,10 +36,10 @@ def main():
     write_patches()
     for name in ["aoc-harness-macros", "aoc-harness", "aoc-harness-cli"]:
         command(["cargo", "package", "--package", name, "--allow-dirty", "--no-verify", "--offline", "--config", str(patches)])
-        archive = target / f"package/{name}-0.1.0.crate"
+        archive = target / f"package/{name}-0.1.1.crate"
         with tarfile.open(archive) as package:
             package.extractall(destination, filter="data")
-        source = destination / f"{name}-0.1.0"
+        source = destination / f"{name}-0.1.1"
         unpacked[name] = source
         write_patches()
 
@@ -70,7 +70,7 @@ version = "0.0.0"
 edition = "2021"
 [workspace]
 [dependencies]
-aoc-harness = "0.1.0"
+aoc-harness = "0.1.1"
 ''')
     (consumer / "src/lib.rs").write_text('''#[aoc_harness::aoc(day1, part1)]
 fn solve(raw: &str) -> Option<usize> { Some(raw.len()) }

@@ -113,7 +113,7 @@ fn command_help_works_without_a_consumer_or_cargo() {
 
         assert!(output.contains("Usage: cargo aoc-harness [OPTIONS] [COMMAND]"));
         assert!(output.contains("Commands:"));
-        for action in ["run", "list", "bench"] {
+        for action in ["run", "list", "bench", "profile"] {
             assert!(output.contains(action));
         }
 
@@ -141,6 +141,24 @@ fn command_help_works_without_a_consumer_or_cargo() {
                 assert_eq!(output.contains("latest registered day"), action != "list");
             }
         }
+
+        let output = help(&["profile", "--help"]);
+
+        assert!(output.contains("Usage: cargo aoc-harness profile [OPTIONS]"));
+        for option in [
+            "--profiler",
+            "--duration",
+            "--family",
+            "--output",
+            "--template",
+            "--download",
+        ] {
+            assert!(output.contains(option));
+        }
+        for backend in ["samply", "flamegraph", "perf", "xctrace"] {
+            assert!(output.contains(backend));
+        }
+        assert!(output.contains("[default: 10]"));
 
         for (args, action) in [
             (vec!["--day", "1", "bench", "--help"], "bench"),
@@ -1084,6 +1102,7 @@ fn cli_preflight_and_session_status_work_outside_cargo() {
     assert!(success(call(&["-V"])).contains(env!("CARGO_PKG_VERSION")));
     for args in [
         vec!["input", "--help"],
+        vec!["profile", "--help"],
         vec!["generate", "--help"],
         vec!["credentials", "--help"],
         vec!["credentials", "status", "--help"],
@@ -1111,6 +1130,8 @@ fn cli_preflight_and_session_status_work_outside_cargo() {
         vec!["input", "--all"],
         vec!["input", "--year", "2025", "--all", "--day", "1"],
         vec!["generate", "--day", "26"],
+        vec!["profile", "--duration", "0"],
+        vec!["profile", "--template", "CPU Counters"],
     ] {
         let output = call(&args);
         let diagnostic = String::from_utf8_lossy(&output.stderr);
@@ -1120,6 +1141,24 @@ fn cli_preflight_and_session_status_work_outside_cargo() {
             !diagnostic.contains("cargo metadata"),
             "preflight invoked Cargo: {diagnostic}"
         );
+    }
+
+    let output = Command::new(cli)
+        .args(["profile", "--day", "1", "--part", "1"])
+        .current_dir(temp.path())
+        .env("PATH", "")
+        .env("CARGO", temp.path().join("missing-cargo"))
+        .output()
+        .unwrap();
+
+    failure(output, "samply is not installed or not on PATH");
+    for (profiler, supported) in [
+        ("perf", cfg!(target_os = "linux")),
+        ("xctrace", cfg!(target_os = "macos")),
+    ] {
+        if !supported {
+            failure(call(&["profile", "--profiler", profiler]), "only supported");
+        }
     }
 }
 
@@ -1299,4 +1338,280 @@ fn debug_symbols_override_profiles_without_changing_optimization() {
         build("unknown-profile"),
         "requires a declared custom profile",
     );
+}
+
+#[test]
+fn profiling_collectors_run_compiled_workloads_and_preserve_consumer_files() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let target = root.join("target");
+    fs::create_dir_all(&target).unwrap();
+    let temp = tempfile::Builder::new()
+        .prefix("profiling with spaces ")
+        .tempdir_in(&target)
+        .unwrap();
+    let consumer = temp.path().join("consumer with spaces");
+    let tools = temp.path().join("tools with spaces");
+    fs::create_dir_all(&tools).unwrap();
+    copy_fixture(
+        &root.join("fixtures/library"),
+        &consumer,
+        &root.join("crates/aoc-harness"),
+    );
+    fs::write(consumer.join("alternate input.txt"), "alpha\nbeta\n").unwrap();
+    let library = consumer.join("src/lib.rs");
+    let original = fs::read_to_string(&library).unwrap();
+    let with_relative_file = original.replace(
+        "fn lines(raw: &str) -> Vec<&str> {",
+        "fn lines(raw: &str) -> Vec<&str> {\n        assert!(std::path::Path::new(\"alternate input.txt\").is_file(), \"workload directory changed\");",
+    );
+    assert_ne!(original, with_relative_file);
+    fs::write(&library, with_relative_file).unwrap();
+    let before = snapshot(&consumer);
+    let source = temp.path().join("collector.rs");
+    fs::write(&source, r#"
+use std::{env, fs, path::PathBuf, process::{Command, exit}};
+
+fn main() {
+    let args: Vec<_> = env::args_os().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "--version") {
+        return;
+    }
+    let program = env::current_exe().unwrap();
+    let name = program.file_stem().unwrap().to_str().unwrap();
+    if name == "xcrun" {
+        if args == ["--find", "xctrace"] {
+            println!("{}", program.with_file_name(format!("xctrace{}", env::consts::EXE_SUFFIX)).display());
+            return;
+        }
+        exit(Command::new("/usr/bin/xcrun").args(&args).status().unwrap().code().unwrap_or(1));
+    }
+    fs::write(env::var_os("AOC_TEST_PROFILE_LOG").unwrap(), args.iter()
+        .map(|arg| arg.to_string_lossy()).collect::<Vec<_>>().join("\n")).unwrap();
+    let mode = env::var("AOC_TEST_PROFILE_MODE").unwrap_or_default();
+    if mode == "fail" {
+        exit(17);
+    }
+    let start = args.iter().position(|arg| arg == "--").unwrap() + 1;
+    if mode != "skip-child" {
+        let status = Command::new(&args[start]).args(&args[start + 1..]).status().unwrap();
+        if !status.success() && mode != "ignore-child-status" {
+            exit(status.code().unwrap_or(1));
+        }
+    }
+    if mode != "no-output" {
+        let output = PathBuf::from(&args[args.iter().position(|arg| arg == "--output").unwrap() + 1]);
+        if name == "xctrace" {
+            fs::create_dir(&output).unwrap();
+            fs::write(output.join("trace.data"), b"synthetic trace").unwrap();
+        } else {
+            fs::write(output, b"synthetic recording").unwrap();
+        }
+    }
+}
+"#).unwrap();
+    let collector = tools.join(format!("samply{}", std::env::consts::EXE_SUFFIX));
+    success(
+        Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+            .arg(&source)
+            .arg("--edition=2021")
+            .arg("-o")
+            .arg(&collector)
+            .output()
+            .unwrap(),
+    );
+    for name in ["flamegraph", "perf", "xctrace", "xcrun"] {
+        fs::copy(
+            &collector,
+            tools.join(format!("{name}{}", std::env::consts::EXE_SUFFIX)),
+        )
+        .unwrap();
+    }
+    let cli = env!("CARGO_BIN_EXE_cargo-aoc-harness");
+    let log = temp.path().join("arguments.txt");
+    let path = std::env::join_paths(
+        std::iter::once(tools.clone())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let run = |args: &[&str], mode: &str| {
+        Command::new(cli)
+            .arg("profile")
+            .args(args)
+            .args(["--duration", "1", "--profile", "dev"])
+            .current_dir(&consumer)
+            .env("PATH", &path)
+            .env("CARGO_TARGET_DIR", &target)
+            .env("CARGO_NET_OFFLINE", "true")
+            .env("AOC_TEST_PROFILE_LOG", &log)
+            .env("AOC_TEST_PROFILE_MODE", mode)
+            .output()
+            .unwrap()
+    };
+
+    let mut backends = vec![("samply", "json.gz"), ("flamegraph", "svg")];
+    if cfg!(target_os = "linux") {
+        backends.push(("perf", "data"));
+    }
+    if cfg!(target_os = "macos") {
+        backends.push(("xctrace", "trace"));
+    }
+    for (backend, extension) in backends {
+        let output = temp
+            .path()
+            .join(format!("recording with spaces.{extension}"));
+
+        let result = success(run(
+            &[
+                "--day",
+                "3",
+                "--part",
+                "1",
+                "--input",
+                "alternate input.txt",
+                "--profiler",
+                backend,
+                "--output",
+                output.to_str().unwrap(),
+            ],
+            "",
+        ));
+        let arguments = fs::read_to_string(&log).unwrap();
+
+        assert!(result.contains("Profile recording:"));
+        assert!(!result.contains("Benchmark reports:"));
+        assert!(output.exists());
+        assert!(arguments.contains(consumer.join("alternate input.txt").to_str().unwrap()));
+        assert!(arguments.contains("--duration\n1"));
+        assert!(arguments.contains("--family\nend-to-end"));
+        assert!(arguments.contains("--profile-status\n"));
+        assert!(arguments.contains("--\n"));
+
+        fs::remove_file(&log).unwrap();
+        failure(
+            run(
+                &[
+                    "--day",
+                    "3",
+                    "--part",
+                    "1",
+                    "--profiler",
+                    backend,
+                    "--output",
+                    output.to_str().unwrap(),
+                ],
+                "",
+            ),
+            "already exists",
+        );
+        assert!(!log.exists(), "launched a collector for an existing output");
+    }
+
+    for args in [
+        vec![
+            "--day",
+            "1",
+            "--part",
+            "1",
+            "--family",
+            "generator",
+            "--filter",
+            "/default$",
+        ],
+        vec!["--day", "1", "--part", "1", "--family", "solver"],
+        vec![
+            "--day",
+            "1",
+            "--part",
+            "1",
+            "--solution",
+            "cached",
+            "--family",
+            "solver",
+        ],
+        vec![
+            "--day",
+            "1",
+            "--part",
+            "2",
+            "--solution",
+            "mutable",
+            "--family",
+            "solver",
+        ],
+        vec![
+            "--day",
+            "1",
+            "--part",
+            "2",
+            "--solution",
+            "owned",
+            "--family",
+            "solver",
+        ],
+        vec!["--all-days", "--family", "full-run"],
+    ] {
+        let output = success(run(&args, ""));
+
+        assert!(output.contains("Profile recording:"));
+        assert!(!output.contains("Benchmark reports:"));
+    }
+    assert_eq!(snapshot(&consumer), before);
+
+    let output = run(&["--day", "3", "--part", "1"], "fail");
+
+    assert_eq!(output.status.code(), Some(17));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("Profile recording:"));
+    failure(
+        run(&["--day", "3", "--part", "1"], "skip-child"),
+        "did not complete successfully",
+    );
+    failure(
+        run(&["--day", "3", "--part", "1"], "no-output"),
+        "without a recording",
+    );
+
+    fs::remove_file(&log).unwrap();
+    failure(run(&["--day", "3"], ""), "exactly one workload");
+    assert!(
+        !log.exists(),
+        "launched a collector for an ambiguous workload"
+    );
+    fs::write(consumer.join("input/2025/day3.txt"), "").unwrap();
+    failure(
+        run(&["--day", "3", "--part", "2"], ""),
+        "index out of bounds",
+    );
+    assert!(
+        !log.exists(),
+        "launched a collector after prevalidation failed"
+    );
+
+    fs::write(
+        consumer.join("src/lib.rs"),
+        r#"
+use std::sync::atomic::{AtomicUsize, Ordering};
+static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+#[aoc_harness::aoc(day1, part1)]
+fn solve(_: &str) -> Option<usize> {
+    if CALLS.fetch_add(1, Ordering::SeqCst) == 0 { Some(1) } else { None }
+}
+
+aoc_harness::aoc_lib! { year = 2025 }
+"#,
+    )
+    .unwrap();
+
+    let output = run(
+        &["--day", "1", "--part", "1", "--family", "solver"],
+        "ignore-child-status",
+    );
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+
+    assert!(diagnostic.contains("solver: returned None"));
+    failure(output, "did not complete successfully");
 }
