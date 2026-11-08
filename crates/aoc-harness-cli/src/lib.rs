@@ -29,7 +29,7 @@ struct BuildOptions {
     #[arg(long)]
     manifest_path: Option<PathBuf>,
     /// Consumer package to select from a workspace.
-    #[arg(short, long)]
+    #[arg(long)]
     package: Option<String>,
     /// Enable consumer features (comma-separated or repeated).
     #[arg(short = 'F', long, action = clap::ArgAction::Append)]
@@ -315,6 +315,7 @@ fn execute(request: command::Request) -> Result<i32, String> {
             .apply()?;
     }
     let executable = build_bridge(&options, &project)?;
+    let mut profile_workloads = Vec::new();
     if download || profiling.is_some() {
         let description = Command::new(&executable)
             .args(["__describe", "--protocol", "1"])
@@ -333,10 +334,7 @@ fn execute(request: command::Request) -> Result<i32, String> {
         let (year, required) =
             input::validate_description(&description.stdout, &project.manifest_dir, action.name())?;
         if profiling.is_some() {
-            eprintln!(
-                "Profiling workload: {}",
-                profiling::workload(&description.stdout)?
-            );
+            profile_workloads = profiling::workloads(&description.stdout)?;
         }
         if download {
             calendar::validate(year, &required, chrono::Utc::now())?;
@@ -364,7 +362,7 @@ fn execute(request: command::Request) -> Result<i32, String> {
             .target_dir
             .join("aoc-harness/profiles")
             .join(&project.package_name);
-        return backend.record(profiling, &root, &executable, &runtime);
+        return backend.record(profiling, &root, &executable, &runtime, &profile_workloads);
     }
 
     let report_dir = project

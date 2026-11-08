@@ -128,13 +128,17 @@ fn command_help_works_without_a_consumer_or_cargo() {
                 assert!(output.contains(&format!("Usage: cargo aoc-harness {action} [OPTIONS]")));
                 assert!(output.contains("--manifest-path"));
                 assert!(output.contains("--day"));
+                assert!(!output.contains("--days"));
                 assert!(output.contains("--all-days"));
                 assert!(output.contains("--solution"));
+                assert!(output.contains("-p, --part"));
+                assert!(!output.contains("-p, --package"));
                 assert!(output.contains("Examples:"));
                 assert!(!output.contains("Commands:"));
                 assert_eq!(output.contains("--all-solutions"), action == "run");
                 assert_eq!(output.contains("--input"), action != "list");
                 assert_eq!(output.contains("--filter"), action == "bench");
+                assert_eq!(output.contains("--family"), action == "bench");
                 assert_eq!(output.contains("--sample-size"), action == "bench");
                 assert_eq!(output.contains("--smoke"), action == "bench");
                 assert_eq!(output.contains("--color"), action == "bench");
@@ -145,6 +149,9 @@ fn command_help_works_without_a_consumer_or_cargo() {
         let output = help(&["profile", "--help"]);
 
         assert!(output.contains("Usage: cargo aoc-harness profile [OPTIONS]"));
+        assert!(!output.contains("--days"));
+        assert!(output.contains("-p, --part"));
+        assert!(!output.contains("-p, --package"));
         for option in [
             "--profiler",
             "--duration",
@@ -159,6 +166,16 @@ fn command_help_works_without_a_consumer_or_cargo() {
             assert!(output.contains(backend));
         }
         assert!(output.contains("[default: 10]"));
+        assert!(output.contains("[default: end-to-end]"));
+        assert!(output.contains("Each workload gets its own recording"));
+
+        let output = help(&["bench", "--help"]);
+
+        assert!(output.contains("[default: solver]"));
+        assert!(output.contains("comma-separated or repeated"));
+        for family in ["generator", "solver", "end-to-end", "full-run"] {
+            assert!(output.contains(family));
+        }
 
         for (args, action) in [
             (vec!["--day", "1", "bench", "--help"], "bench"),
@@ -270,7 +287,7 @@ fn installed_library_workflow() {
     for selection in [
         vec!["run", "--day", "3,1,3"],
         vec!["--day", "3", "run", "--day", "1"],
-        vec!["run", "--days=1,3"],
+        vec!["run", "--day=1,3"],
     ] {
         let mut args = selection;
         args.extend(["--profile", "dev"]);
@@ -291,7 +308,7 @@ fn installed_library_workflow() {
     assert!(output.contains("[mutable]"));
     assert!(output.contains("day 3 part 2 [default] (selected default)"));
 
-    let output = success(run(&["list", "--days", "1,3", "--profile", "dev"]));
+    let output = success(run(&["list", "--day", "1,3", "--profile", "dev"]));
 
     assert!(output.contains("day 1 part 2 [owned] (selected default)"));
     assert!(output.contains("day 3 part 2 [default] (selected default)"));
@@ -301,7 +318,7 @@ fn installed_library_workflow() {
         "run",
         "--day",
         "1",
-        "--part",
+        "-p",
         "2",
         "--solution",
         "mutable",
@@ -355,10 +372,11 @@ fn installed_library_workflow() {
 
     let output = success(run(&["bench", "--smoke", "--profile", "dev"]));
 
-    assert!(output.contains("Smoke: generator/day3/default\n"));
+    assert!(!output.contains("Smoke: generator/"));
     assert!(output.contains("Smoke: solver/day3/part1/default\n"));
     assert!(output.contains("Smoke: solver/day3/part2/default\n"));
-    assert!(output.contains("Smoke: full-run/2025-day-3\n"));
+    assert!(!output.contains("Smoke: end-to-end/"));
+    assert!(!output.contains("Smoke: full-run/"));
     assert!(!output.contains("day1/"));
     assert!(!output.contains("day2/"));
 
@@ -374,6 +392,10 @@ fn installed_library_workflow() {
 
     let output = success(run(&[
         "bench",
+        "--family",
+        "end-to-end",
+        "--family",
+        "full-run",
         "--features",
         "bonus",
         "--smoke",
@@ -381,12 +403,20 @@ fn installed_library_workflow() {
         "dev",
     ]));
 
-    assert!(output.contains("Smoke: solver/day5/part1/only\n"));
+    assert!(!output.contains("Smoke: solver/"));
     assert!(output.contains("Smoke: end-to-end/day5/part1/only\n"));
     assert!(output.contains("Smoke: full-run/2025-day-5\n"));
     assert!(!output.contains("day3/"));
 
-    let output = success(run(&["bench", "--all-days", "--smoke", "--profile", "dev"]));
+    let output = success(run(&[
+        "bench",
+        "--all-days",
+        "--family",
+        "generator,solver,end-to-end,full-run",
+        "--smoke",
+        "--profile",
+        "dev",
+    ]));
 
     for family in ["generator/", "solver/", "end-to-end/", "full-run/"] {
         assert!(output.contains(family));
@@ -400,8 +430,10 @@ fn installed_library_workflow() {
     assert!(!output.contains("part0"));
     let output = success(run(&[
         "bench",
-        "--days",
+        "--day",
         "1,3",
+        "--family",
+        "generator,full-run",
         "--smoke",
         "--profile",
         "dev",
@@ -437,6 +469,8 @@ fn installed_library_workflow() {
         "--day",
         "1",
         "bench",
+        "--family",
+        "generator,solver,end-to-end,full-run",
         "--sample-size",
         "10",
         "--warm-up-time",
@@ -455,6 +489,8 @@ fn installed_library_workflow() {
     assert!(output.contains("time:"));
     assert!(output.contains("Benchmark reports:"));
     assert!(output.contains("generator/day1/default"));
+    assert!(output.contains("end-to-end/day1/part2/owned"));
+    assert!(output.contains("full-run/2025-day-1"));
     assert!(!output.contains("part0"));
     assert!(!output.contains('\x1b'));
     assert!(diagnostics.contains("Running benchmarks..."));
@@ -478,8 +514,6 @@ fn installed_library_workflow() {
             "2",
             "--solution",
             "owned",
-            "--filter",
-            "^solver/",
             "--color=always",
             "--sample-size",
             "10",
@@ -496,6 +530,9 @@ fn installed_library_workflow() {
     assert!(output.contains("\x1b["));
     assert!(output.contains("time:"));
     assert!(output.contains("Benchmark reports:"));
+    for family in ["generator/", "end-to-end/", "full-run/"] {
+        assert!(!output.contains(family));
+    }
 
     failure(
         run(&[
@@ -535,7 +572,7 @@ fn installed_library_workflow() {
     failure(
         run(&[
             "run",
-            "--days",
+            "--day",
             "1,3",
             "--input",
             "missing input",
@@ -793,6 +830,10 @@ aoc_harness::aoc_lib! { year = 2025 }
         "list",
         "--package",
         "one",
+        "-d",
+        "2",
+        "-p",
+        "1",
         "--profile",
         "dev",
     ]));
@@ -917,7 +958,7 @@ fn parity_commands_and_consumer_entry_points() {
     assert!(!output.contains("Day 4 - Part 1"));
     let output = success(run(&[
         "bench",
-        "--days",
+        "--day",
         "1,2,3,4",
         "--download",
         "--offline",
@@ -936,6 +977,8 @@ fn parity_commands_and_consumer_entry_points() {
         "bench",
         "--day",
         "1",
+        "--family",
+        "generator,solver,end-to-end,full-run",
         "--filter",
         "^(generator/|solver/|end-to-end/|full-run/)",
         "--sample-size",
@@ -956,7 +999,7 @@ fn parity_commands_and_consumer_entry_points() {
         ("custom", "3"),
     ] {
         for args in [
-            vec!["run", "--day", day],
+            vec!["run", "--day", day, "-p", "1"],
             vec!["list"],
             vec!["bench", "--day", day, "--smoke"],
         ] {
@@ -1006,7 +1049,7 @@ fn parity_commands_and_consumer_entry_points() {
 
     assert!(output.contains("1 cached"));
     fs::write(&source, &original).unwrap();
-    let output = success(run(&["generate", "--days", "6,7", "--dry-run"]));
+    let output = success(run(&["generate", "--day", "6,7", "--dry-run"]));
 
     assert!(output.contains("+++ ") && output.contains("+mod day6;"));
     assert_eq!(fs::read_to_string(&source).unwrap(), original);
@@ -1025,9 +1068,9 @@ fn parity_commands_and_consumer_entry_points() {
     );
     assert_eq!(fs::read_to_string(&source).unwrap(), original);
     assert!(!consumer.join("src/day6.rs").exists());
-    success(run(&["generate", "--days", "6,7"]));
+    success(run(&["generate", "--day", "6,7"]));
     let generated = snapshot(&consumer);
-    success(run(&["generate", "--days", "7,6"]));
+    success(run(&["generate", "--day", "7,6"]));
 
     assert_eq!(snapshot(&consumer), generated);
     success(cargo(&["check", "--all-targets", "--offline"]));
@@ -1123,6 +1166,7 @@ fn cli_preflight_and_session_status_work_outside_cargo() {
         "unrecognized subcommand",
     );
     for args in [
+        vec!["run", "--days", "1,3"],
         vec!["run", "--generate"],
         vec!["run", "--day", "1", "--session-file", "session"],
         vec!["run", "--day", "1", "--input", "alternate", "--download"],
@@ -1468,7 +1512,7 @@ fn main() {
             &[
                 "--day",
                 "3",
-                "--part",
+                "-p",
                 "1",
                 "--input",
                 "alternate input.txt",
@@ -1561,6 +1605,78 @@ fn main() {
     }
     assert_eq!(snapshot(&consumer), before);
 
+    let recordings = temp.path().join("multiple recordings");
+    let output = success(run(
+        &[
+            "--day",
+            "3",
+            "--part",
+            "1",
+            "--family",
+            "generator,solver",
+            "--family",
+            "end-to-end,full-run",
+            "--output",
+            recordings.to_str().unwrap(),
+        ],
+        "",
+    ));
+    let files: Vec<_> = snapshot(&recordings)
+        .into_iter()
+        .map(|(path, _)| path.strip_prefix(&recordings).unwrap().to_owned())
+        .collect();
+    let arguments = fs::read_to_string(&log).unwrap();
+
+    assert_eq!(output.matches("Profile recording:").count(), 4);
+    assert_eq!(
+        files,
+        [
+            "end-to-end/day3/part1/default/profile.json.gz",
+            "full-run/2025-day-3-part-1/profile.json.gz",
+            "generator/day3/default/profile.json.gz",
+            "solver/day3/part1/default/profile.json.gz",
+        ]
+        .map(PathBuf::from)
+    );
+    assert!(arguments.contains("--profile-workload\nfull-run/2025-day-3-part-1"));
+    assert!(!output.contains("Benchmark reports:"));
+
+    fs::remove_file(&log).unwrap();
+    failure(
+        run(
+            &[
+                "--day",
+                "3",
+                "--family",
+                "generator,solver",
+                "--output",
+                recordings.to_str().unwrap(),
+            ],
+            "",
+        ),
+        "already exists",
+    );
+    assert!(!log.exists());
+
+    let output = success(run(
+        &[
+            "--day",
+            "3",
+            "--part",
+            "1",
+            "--family",
+            "generator,solver,end-to-end,full-run",
+            "--family",
+            "solver",
+            "--filter",
+            "^(generator|solver)/",
+        ],
+        "",
+    ));
+
+    assert_eq!(output.matches("Profile recording:").count(), 2);
+    assert!(!output.contains("Benchmark reports:"));
+
     let output = run(&["--day", "3", "--part", "1"], "fail");
 
     assert_eq!(output.status.code(), Some(17));
@@ -1575,14 +1691,14 @@ fn main() {
     );
 
     fs::remove_file(&log).unwrap();
-    failure(run(&["--day", "3"], ""), "exactly one workload");
-    assert!(
-        !log.exists(),
-        "launched a collector for an ambiguous workload"
-    );
+    let output = success(run(&["--day", "3"], ""));
+
+    assert_eq!(output.matches("Profile recording:").count(), 2);
+
+    fs::remove_file(&log).unwrap();
     fs::write(consumer.join("input/2025/day3.txt"), "").unwrap();
     failure(
-        run(&["--day", "3", "--part", "2"], ""),
+        run(&["--day", "3", "--family", "solver,end-to-end"], ""),
         "index out of bounds",
     );
     assert!(

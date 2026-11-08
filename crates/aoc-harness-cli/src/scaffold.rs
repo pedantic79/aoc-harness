@@ -69,7 +69,7 @@ impl ScaffoldPlan {
         days.sort_unstable();
         days.dedup();
         if days.is_empty() {
-            return Err("generation requires an explicit --day or --days selection".into());
+            return Err("generation requires an explicit --day selection".into());
         }
         for day in days {
             let mut names = vec![format!("day{day}"), format!("day{day:02}")];

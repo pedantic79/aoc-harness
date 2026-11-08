@@ -23,7 +23,7 @@ pub(crate) fn select(
     let mut days = days.to_vec();
     if all {
         let length = EventCalendar::length(year)
-            .ok_or("unknown event calendar; use an explicit --day or --days list")?;
+            .ok_or("unknown event calendar; use an explicit --day list")?;
         days = (1..=length)
             .filter(|day| released(year, *day, now))
             .collect();
@@ -31,12 +31,10 @@ pub(crate) fn select(
             return Err("event has not released any inputs yet".into());
         }
     } else if days.is_empty() {
-        let length =
-            EventCalendar::length(year).ok_or("unknown event calendar; supply --day or --days")?;
+        let length = EventCalendar::length(year).ok_or("unknown event calendar; supply --day")?;
         if est.year() != i32::from(year) || est.month() != 12 || est.day() > u32::from(length) {
             return Err(
-                "outside the selected event's December release window; supply --day or --days"
-                    .into(),
+                "outside the selected event's December release window; supply --day".into(),
             );
         }
         days.push(est.day() as u8);

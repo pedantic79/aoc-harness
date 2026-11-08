@@ -44,7 +44,7 @@ macros through `aoc_harness` in your solution code.
 
 ```toml
 [dependencies]
-aoc-harness = "0.2.1"
+aoc-harness = "0.3.0"
 ```
 
 Replace `src/lib.rs` with your day modules and event year:
@@ -183,9 +183,13 @@ cargo aoc-harness list
 rules.
 
 `run` and `bench` build in release mode by default; `list` shows every registered
-day and marks default implementations. As you add days, use `--days 1,3` to
-select several at once. Use `--input PATH` with a single `--day` to try an
-alternate input file.
+day and marks default implementations. As you add days, use `--day 1,3` or repeat
+the flag with `--day 1 --day 3` to select several at once. `-d` is the short form
+of `--day`. Use `--input PATH` with a single `--day` to try an alternate input
+file.
+
+Use `--part 1` or `-p 1` to select a part, for example
+`cargo aoc-harness run -d 1 -p 2`. Workspace package selection uses `--package`.
 
 For `run --day 1`, the example produces output like this (timings vary):
 
@@ -241,14 +245,21 @@ cargo aoc-harness bench
 cargo aoc-harness bench --day 1 --open
 cargo aoc-harness bench --day 1 --part 2 --solution sorted
 cargo aoc-harness bench --all-days
+cargo aoc-harness bench --day 1 --family generator,solver
+cargo aoc-harness bench --all-days --family full-run
 ```
+
+Benchmarks default to the `solver` family. Use `--family` to select any combination
+of `generator`, `solver`, `end-to-end`, and `full-run`, with comma-separated values
+or repeated flags, such as `--family generator --family solver`. `--filter`
+further narrows the selected families by benchmark name.
 
 | Family | Measured work |
 | --- | --- |
-| Generator | Parse input once. |
-| Solver | Run one solver, excluding input preparation and external cleanup. |
-| End to end | Generate input, solve, and clean up for one implementation. |
-| Full run | Execute the selected default implementations, including parsing and cleanup. |
+| `generator` | Parse input once. |
+| `solver` | Run one solver, excluding input preparation and external cleanup. |
+| `end-to-end` | Generate input, solve, and clean up for one implementation. |
+| `full-run` | Execute the selected default implementations, including parsing and cleanup. |
 
 Mutable and consuming solver benchmarks receive fresh input for each iteration.
 Immutable solvers reuse prepared input; add `bench_input = "fresh"` to the
@@ -268,24 +279,27 @@ the HTML report after a successful run.
 
 ## Profiling solutions
 
-Install an external profiler, then record one workload:
+Install an external profiler, then record selected workloads:
 
 ```sh
 cargo install --locked samply
 cargo aoc-harness profile --day 1 --part 2
 cargo aoc-harness profile --day 1 --part 2 --family solver --duration 30
+cargo aoc-harness profile --day 1 --family generator,solver
 cargo aoc-harness profile --all-days --family full-run
 ```
 
 Profiling defaults to Samply and approximately 10 seconds of end-to-end work.
-Select a single workload with `--day`, `--part`, and optionally `--solution`, or
+Select workloads with `--day`, `--part`, and optionally `--solution`, or
 choose `--family full-run` for a complete pass. Debug symbols are enabled
 automatically while preserving the selected Cargo profile's optimization.
 
 Use `--profiler flamegraph`, `--profiler perf` on Linux, or `--profiler xctrace`
 on macOS for other recorders, installed separately. Recordings go under
 `<target-dir>/aoc-harness/profiles/<your-package>/`; `--output PATH` selects a new
-output path. The CLI prints how to open the recording.
+output path. With multiple workloads, `PATH` is a new directory containing a
+recording for each workload, organized by workload name. The CLI prints how to
+open each recording.
 
 | Profiler | Recording | Open with |
 | --- | --- | --- |
@@ -298,9 +312,13 @@ Flamegraph also needs its platform's collector: `perf` on Linux or full Xcode's
 `xctrace` on macOS. For xctrace, `--template` selects the recording template;
 the default is `Time Profiler`.
 
-Profiling supports the generator, solver, end-to-end, and full-run families.
-Use `--filter` to narrow a family to exactly one workload. Builds, downloads, and
-preflight validation finish before recording starts. Recordings include process
+Profiling shares the benchmark command's `--family` and `--filter` flags:
+select any combination of `generator`, `solver`, `end-to-end`, and `full-run`
+with comma-separated values or repeated `--family` flags, then optionally narrow
+the selection with `--filter`. Each selected workload gets its own recording,
+and `--duration` applies to each workload, so total recording time grows with
+the selection. Builds, downloads, and preflight validation of all selected
+workloads finish before recording starts. Recordings include process
 startup, input loading, and preparation and cleanup around solver calls.
 Profiling does not save benchmark baselines or statistical reports. Existing
 recording paths are preserved; choose a new path for each `--output`.

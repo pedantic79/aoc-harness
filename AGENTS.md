@@ -7,6 +7,22 @@ validation, work, and result handling. Keep closely related statements together,
 including an operation and its error handling. In tests, separate setup, actions,
 and assertions.
 
+## Versioning
+
+Use [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html). Assess
+compatibility against each crate's public Rust API and documented CLI behavior,
+including flags, defaults, and output behavior.
+
+For versions 1.0.0 and later, increment MAJOR for breaking changes, MINOR for
+backward-compatible features, and PATCH for backward-compatible fixes.
+Before 1.0.0, follow Cargo's compatibility convention: breaking changes increment
+MINOR and reset PATCH (for example, `0.2.1` to `0.3.0`); compatible changes
+increment PATCH.
+
+Version crates independently and keep unchanged crates at their existing versions.
+When preparing a release, follow [RELEASE.md](RELEASE.md) for dependency updates,
+validation, and publication.
+
 ## README audiences and consistency
 
 When changing any README or user-facing behavior, review all four READMEs and

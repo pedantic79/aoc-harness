@@ -13,6 +13,7 @@ pub(crate) enum Profiler {
     Xctrace,
 }
 
+#[derive(Clone)]
 pub(crate) struct ProfileOptions {
     pub profiler: Profiler,
     pub output: Option<PathBuf>,
@@ -225,6 +226,48 @@ impl Backend {
         root: &Path,
         bridge: &Path,
         runtime: &[OsString],
+        workloads: &[String],
+    ) -> Result<i32, String> {
+        let multiple = workloads.len() > 1;
+        if multiple {
+            if let Some(output) = &options.output {
+                std::fs::create_dir_all(output.parent().ok_or("profiling output has no parent")?)
+                    .map_err(|e| format!("create output parent: {e}"))?;
+                std::fs::create_dir(output)
+                    .map_err(|e| format!("create profiling output {}: {e}", output.display()))?;
+            }
+        }
+
+        for workload in workloads {
+            let mut recording = options.clone();
+            let mut runtime = runtime.to_vec();
+            if multiple {
+                recording.output = options
+                    .output
+                    .as_ref()
+                    .map(|output| output.join(workload).join(self.profiler.filename()));
+                runtime.extend([
+                    OsString::from("--profile-workload"),
+                    OsString::from(workload),
+                ]);
+            }
+
+            eprintln!("Profiling workload: {workload}");
+            let code = self.record_workload(&recording, root, bridge, &runtime)?;
+            if code != 0 {
+                return Ok(code);
+            }
+        }
+
+        Ok(0)
+    }
+
+    fn record_workload(
+        &self,
+        options: &ProfileOptions,
+        root: &Path,
+        bridge: &Path,
+        runtime: &[OsString],
     ) -> Result<i32, String> {
         std::fs::create_dir_all(root).map_err(|e| format!("create profiling directory: {e}"))?;
         let directory = tempfile::Builder::new()
@@ -321,7 +364,7 @@ impl Backend {
     }
 }
 
-pub(crate) fn workload(description: &[u8]) -> Result<String, String> {
+pub(crate) fn workloads(description: &[u8]) -> Result<Vec<String>, String> {
     let invalid = || {
         "profiling requires an aoc-harness runtime with profiling-v1 support; upgrade the consumer's runtime".to_owned()
     };
@@ -333,10 +376,13 @@ pub(crate) fn workload(description: &[u8]) -> Result<String, String> {
         return Err(invalid());
     }
     let labels = value["profile_workloads"].as_array().ok_or_else(invalid)?;
-    if labels.len() != 1 {
-        return Err("profiling requires exactly one compiled workload".into());
+    if labels.is_empty() {
+        return Err("profiling requires at least one compiled workload".into());
     }
-    labels[0].as_str().map(str::to_owned).ok_or_else(invalid)
+    labels
+        .iter()
+        .map(|label| label.as_str().map(str::to_owned).ok_or_else(invalid))
+        .collect()
 }
 
 #[cfg(test)]
@@ -440,10 +486,10 @@ mod tests {
         assert!(available_output(&output)
             .unwrap_err()
             .contains("already exists"));
-        assert!(workload(br#"{"capabilities":["input-plan-v1"]}"#)
+        assert!(workloads(br#"{"capabilities":["input-plan-v1"]}"#)
             .unwrap_err()
             .contains("upgrade"));
-        assert!(workload(br#"{"capabilities":["profiling-v1"],"profile_workloads":[]}"#).is_err());
+        assert!(workloads(br#"{"capabilities":["profiling-v1"],"profile_workloads":[]}"#).is_err());
         assert_eq!(std::fs::read_to_string(&output).unwrap(), "preserved");
     }
 }

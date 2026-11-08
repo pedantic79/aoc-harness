@@ -17,7 +17,7 @@ runtime and re-exports `aoc`, `aoc_generator`, `aoc_lib`, and `aoc_main` from
 
 ```toml
 [dependencies]
-aoc-harness = "0.2.1"
+aoc-harness = "0.3.0"
 ```
 
 ```rust,ignore
@@ -34,6 +34,17 @@ aoc_lib! { year = 2025 }
 
 Use `aoc_harness::aoc_main! { lib = your_library }` in a binary, or finish a
 standalone binary with `aoc_harness::aoc_main! { year = 2025 }`.
+
+Select multiple days with `--day 1,3` or `--day 1 --day 3`; `-d` is the short form
+of `--day`. Select a part with `--part 1` or `-p 1`. Use `--all-days` to select
+every registered day.
+
+`cargo aoc-harness bench` benchmarks solvers by default. Select any combination
+of `generator`, `solver`, `end-to-end`, and `full-run` with `--family`, for example
+`cargo aoc-harness bench --family generator,solver`. Comma-separated values and
+repeated `--family` flags work with measured benchmarks and `--smoke`.
+Profiling uses the same `--family` and `--filter` selection, defaults to
+`end-to-end`, and records each selected workload separately.
 
 See the [repository documentation](https://github.com/pedantic79/aoc-harness)
 for selection, Option/Result handling, custom Borrow projections, benchmarks,
