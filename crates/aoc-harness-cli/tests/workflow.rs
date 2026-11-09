@@ -136,6 +136,9 @@ fn command_help_works_without_a_consumer_or_cargo() {
                 assert!(output.contains("Examples:"));
                 assert!(!output.contains("Commands:"));
                 assert_eq!(output.contains("--all-solutions"), action == "run");
+                assert_eq!(output.contains("--format"), action == "run");
+                assert_eq!(output.contains("--save-baseline"), action == "bench");
+                assert_eq!(output.contains("--baseline"), action == "bench");
                 assert_eq!(output.contains("--input"), action != "list");
                 assert_eq!(output.contains("--filter"), action == "bench");
                 assert_eq!(output.contains("--family"), action == "bench");
@@ -172,6 +175,17 @@ fn command_help_works_without_a_consumer_or_cargo() {
         let output = help(&["bench", "--help"]);
 
         assert!(output.contains("[default: solver]"));
+        assert!(output.contains("Execute each selected workload once"));
+        assert!(output.contains("--save-baseline <NAME>"));
+        assert!(output.contains("--baseline <NAME>"));
+
+        let input_help = help(&["input", "--help"]);
+        assert!(!input_help.contains("--year"));
+        assert!(input_help.contains("project's declared event"));
+        let run_help = help(&["run", "--help"]);
+        assert!(run_help.contains("fail if displayed answers disagree"));
+        assert!(run_help.contains("--format"));
+        assert!(run_help.contains("json"));
         assert!(output.contains("comma-separated or repeated"));
         for family in ["generator", "solver", "end-to-end", "full-run"] {
             assert!(output.contains(family));
@@ -327,16 +341,12 @@ fn installed_library_workflow() {
     ]));
 
     assert!(output.contains("Day 1 - Part 2 - mutable: 306"));
-    let output = success(run(&[
-        "run",
-        "--day",
-        "1",
-        "--all-solutions",
-        "--profile",
-        "dev",
-    ]));
+    let output = run(&["run", "--day", "1", "--all-solutions", "--profile", "dev"]);
 
-    assert!(output.contains("Comparison run (2025 day 1, 5 selected)"));
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("Comparison run (2025 day 1, 5 selected)")
+    );
+    failure(output, "Variant disagreement: day 1 part 2");
 
     let output = success(run(&["list", "--features", "bonus", "--profile", "dev"]));
 
@@ -1044,8 +1054,8 @@ fn parity_commands_and_consumer_entry_points() {
 
     let source = consumer.join("src/lib.rs");
     let original = fs::read_to_string(&source).unwrap();
-    fs::write(&source, "uncompilable Rust source").unwrap();
-    let output = success(run(&["input", "--year", "2025", "--day", "1", "--offline"]));
+    fs::write(&source, "#[aoc_harness::aoc(day1, part1)] fn unfinished(_: &str) -> usize { missing_value }\naoc_harness::aoc_lib! { year = 2025 }\n").unwrap();
+    let output = success(run(&["input", "--day", "1", "--offline"]));
 
     assert!(output.contains("1 cached"));
     fs::write(&source, &original).unwrap();
@@ -1055,15 +1065,7 @@ fn parity_commands_and_consumer_entry_points() {
     assert_eq!(fs::read_to_string(&source).unwrap(), original);
     assert!(!consumer.join("src/day6.rs").exists());
     failure(
-        run(&[
-            "input",
-            "--year",
-            "2025",
-            "--day",
-            "6",
-            "--generate",
-            "--offline",
-        ]),
+        run(&["input", "--day", "6", "--generate", "--offline"]),
         "--offline prevents downloading",
     );
     assert_eq!(fs::read_to_string(&source).unwrap(), original);
@@ -1171,7 +1173,7 @@ fn cli_preflight_and_session_status_work_outside_cargo() {
         vec!["run", "--day", "1", "--session-file", "session"],
         vec!["run", "--day", "1", "--input", "alternate", "--download"],
         vec!["bench", "--open", "--smoke"],
-        vec!["input", "--all"],
+        vec!["input", "--year", "2025"],
         vec!["input", "--year", "2025", "--all", "--day", "1"],
         vec!["generate", "--day", "26"],
         vec!["profile", "--duration", "0"],
@@ -1271,7 +1273,7 @@ aoc_harness::aoc_lib! { year=2025 }
 
     assert!(String::from_utf8_lossy(&output.stdout).contains("Benchmark output (incomplete)"));
     failure(output, "solver: returned None");
-    // Smoke prevalidation catches None before announcing a successful family.
+    // Smoke execution catches None before announcing a successful workload.
     fs::write(&source, "#[aoc_harness::aoc(day1,part1)] fn solve(_: &str) -> Option<usize> { None }\naoc_harness::aoc_lib! { year=2025 }\n").unwrap();
     let output = run(&["bench", "--day", "1", "--smoke", "--profile", "dev"]);
 
@@ -1730,4 +1732,430 @@ aoc_harness::aoc_lib! { year = 2025 }
 
     assert!(diagnostic.contains("solver: returned None"));
     failure(output, "did not complete successfully");
+}
+
+#[test]
+fn run_reports_preserve_answers_and_check_every_completed_variant() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let target = root.join("target");
+    fs::create_dir_all(&target).unwrap();
+    let temp = tempfile::tempdir_in(&target).unwrap();
+    let consumer = temp.path().join("consumer");
+    copy_fixture(
+        &root.join("fixtures/library"),
+        &consumer,
+        &root.join("crates/aoc-harness"),
+    );
+    let cli = env!("CARGO_BIN_EXE_cargo-aoc-harness");
+    let run = |args: &[&str]| {
+        let mut args = args.to_vec();
+        args.extend(["--profile", "dev", "--offline"]);
+        invoke(cli, &consumer, &args, &target, temp.path())
+    };
+    let report = |output: &Output| -> serde_json::Value {
+        serde_json::from_slice(&output.stdout).unwrap_or_else(|e| panic!("{e}: {output:?}"))
+    };
+
+    let output = run(&[
+        "run",
+        "-d",
+        "1",
+        "-p",
+        "1",
+        "--all-solutions",
+        "--format",
+        "json",
+        "--download",
+    ]);
+    let value = report(&output);
+
+    assert!(output.status.success());
+    assert_eq!(value["year"], 2025);
+    assert_eq!(value["outcome"], "success");
+    assert_eq!(value["results"].as_array().unwrap().len(), 2);
+    assert_eq!(value["results"][0]["variant"], "cached");
+    assert_eq!(value["results"][1]["variant"], "default");
+    assert!(value["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|r| r["answer"] == "6"));
+    assert!(value["disagreements"].as_array().unwrap().is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("1 cached"));
+    for result in value["results"].as_array().unwrap() {
+        assert!(result["generator_ns"].is_u64());
+        assert!(result["solver_ns"].is_u64());
+    }
+    assert!(value["totals"]["total_ns"].is_u64());
+
+    let output = run(&[
+        "run",
+        "-d",
+        "1",
+        "-p",
+        "2",
+        "--all-solutions",
+        "--format",
+        "json",
+    ]);
+    let value = report(&output);
+
+    assert!(!output.status.success());
+    assert_eq!(value["outcome"], "disagreement");
+    assert_eq!(value["disagreements"][0]["day"], 1);
+    assert_eq!(value["disagreements"][0]["part"], 2);
+    assert_eq!(
+        value["disagreements"][0]["variants"],
+        serde_json::json!([
+            {"variant": "default", "answer": "12"},
+            {"variant": "mutable", "answer": "306"},
+            {"variant": "owned", "answer": "12"},
+        ])
+    );
+
+    let alternate = consumer.join("negative.txt");
+    fs::write(&alternate, "-1\n").unwrap();
+    let output = run(&[
+        "run",
+        "-d",
+        "1",
+        "-p",
+        "2",
+        "--all-solutions",
+        "--input",
+        alternate.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let value = report(&output);
+
+    assert!(!output.status.success());
+    assert_eq!(value["outcome"], "failed");
+    assert_eq!(value["results"].as_array().unwrap().len(), 2);
+    assert_eq!(value["results"][0]["answer"], "-2");
+    assert_eq!(value["failure"]["variant"], "owned");
+    assert_eq!(value["failure"]["phase"], "solver");
+    assert_eq!(value["disagreements"].as_array().unwrap().len(), 1);
+
+    fs::write(&alternate, "invalid\n").unwrap();
+    let output = run(&[
+        "run",
+        "-d",
+        "1",
+        "-p",
+        "1",
+        "--input",
+        alternate.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let value = report(&output);
+
+    assert!(!output.status.success());
+    assert!(value["results"].as_array().unwrap().is_empty());
+    assert_eq!(value["failure"]["phase"], "generator");
+    assert_eq!(value["failure"]["day"], 1);
+    assert_eq!(value["failure"]["part"], 1);
+
+    fs::write(
+        consumer.join("src/lib.rs"),
+        r#"
+use std::fmt;
+struct Answer;
+impl fmt::Display for Answer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        println!("format diagnostic");
+        f.write_str("  -42\nline two\n ")
+    }
+}
+#[aoc_harness::aoc(day1, part1, named, default)]
+fn solve(_: &str) -> Answer { println!("solver diagnostic"); Answer }
+#[aoc_harness::aoc(day1, part1, other)]
+fn other(_: &str) -> Answer { Answer }
+#[aoc_harness::aoc(day1, part2)]
+fn negative(_: &str) -> i32 { -42 }
+aoc_harness::aoc_lib! { year = 2025 }
+"#,
+    )
+    .unwrap();
+    let output = run(&["run", "-d", "1", "--all-solutions", "--format", "json"]);
+    let value = report(&output);
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(value["results"][0]["variant"], "named");
+    assert_eq!(value["results"][0]["answer"], "  -42\nline two\n ");
+    assert_eq!(value["results"][1]["answer"], value["results"][0]["answer"]);
+    assert_eq!(value["results"][2]["answer"], "-42");
+    assert!(diagnostics.contains("solver diagnostic"));
+    assert_eq!(diagnostics.matches("format diagnostic").count(), 2);
+
+    let output = run(&["run", "-d", "1", "--all-solutions"]);
+    let output = success(output);
+
+    assert_eq!(output.matches("format diagnostic").count(), 2);
+    assert!(output.contains("Comparison run"));
+
+    fs::write(
+        consumer.join("src/lib.rs"),
+        r#"
+#[aoc_harness::aoc(day1, part1, default)] fn first(_: &str) -> &'static str { "42" }
+#[aoc_harness::aoc(day1, part1, spaced)] fn second(_: &str) -> &'static str { "42 " }
+#[aoc_harness::aoc(day1, part2, default)] fn third(_: &str) -> &'static str { "one\ntwo" }
+#[aoc_harness::aoc(day1, part2, newline)] fn fourth(_: &str) -> &'static str { "one\ntwo\n" }
+aoc_harness::aoc_lib! { year = 2025 }
+"#,
+    )
+    .unwrap();
+    let output = run(&["run", "-d", "1", "--all-solutions", "--format", "json"]);
+    let value = report(&output);
+
+    assert!(!output.status.success());
+    assert_eq!(value["results"].as_array().unwrap().len(), 4);
+    assert_eq!(value["disagreements"].as_array().unwrap().len(), 2);
+
+    fs::write(
+        consumer.join("src/day1.rs"),
+        "#[aoc_harness::aoc(day1, part1)] fn solve(_: &str) -> i32 { -42 }",
+    )
+    .unwrap();
+    fs::write(
+        consumer.join("src/lib.rs"),
+        "mod day1; aoc_harness::aoc_lib! { year = 2025 }",
+    )
+    .unwrap();
+    let output = run(&["run", "-d", "1", "--format", "json", "--generate"]);
+    let value = report(&output);
+
+    assert!(output.status.success());
+    assert_eq!(value["results"][0]["answer"], "-42");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("No source changes required"));
+
+    let output = run(&["run", "-d", "2", "--format", "json", "--generate"]);
+    let value = report(&output);
+
+    assert!(!output.status.success());
+    assert_eq!(value["failure"]["phase"], "solver");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Generated:"));
+}
+
+#[test]
+fn benchmark_smoke_executes_once_and_named_baselines_are_preserved() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let target = root.join("target");
+    fs::create_dir_all(&target).unwrap();
+    let temp = tempfile::tempdir_in(&target).unwrap();
+    let consumer = temp.path().join("consumer");
+    copy_fixture(
+        &root.join("fixtures/library"),
+        &consumer,
+        &root.join("crates/aoc-harness"),
+    );
+    let cli = env!("CARGO_BIN_EXE_cargo-aoc-harness");
+    let source = consumer.join("src/lib.rs");
+    fs::write(&source, r#"
+use std::io::Write;
+fn record(phase: &str) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("calls.txt");
+    writeln!(std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap(), "{phase}").unwrap();
+}
+#[aoc_harness::aoc_generator(day1)]
+fn parse(raw: &str) -> String { record("generator"); raw.into() }
+#[aoc_harness::aoc(day1, part1)]
+fn solve(raw: &str) -> usize { record("solver"); raw.len() }
+aoc_harness::aoc_lib! { year = 2025 }
+"#).unwrap();
+    let run = |args: &[&str]| {
+        let mut args = args.to_vec();
+        let artifacts = temp.path().join("artifacts");
+        args.extend([
+            "--profile",
+            "dev",
+            "--offline",
+            "--target-dir",
+            artifacts.to_str().unwrap(),
+        ]);
+        invoke(cli, &consumer, &args, &target, temp.path())
+    };
+    let calls = consumer.join("calls.txt");
+    for (families, generators, solvers) in [
+        ("solver", 1, 1),
+        ("solver,end-to-end", 2, 2),
+        ("generator", 1, 0),
+        ("full-run", 1, 1),
+        ("solver,full-run", 2, 2),
+        ("generator,solver,end-to-end,full-run", 4, 3),
+    ] {
+        fs::write(&calls, "").unwrap();
+
+        let output = success(run(&["bench", "-d", "1", "--smoke", "--family", families]));
+        let recorded = fs::read_to_string(&calls).unwrap();
+
+        assert_eq!(
+            recorded.lines().filter(|s| *s == "generator").count(),
+            generators,
+            "{families}: {recorded}"
+        );
+        assert_eq!(
+            recorded.lines().filter(|s| *s == "solver").count(),
+            solvers,
+            "{families}: {recorded}"
+        );
+        assert_eq!(
+            output.matches("Smoke:").count(),
+            families.split(',').count()
+        );
+        assert!(!temp.path().join("artifacts/criterion").exists());
+    }
+
+    fs::write(
+        &source,
+        r#"
+#[aoc_harness::aoc(day1, part1)] fn solve(raw: &str) -> usize { raw.len() }
+#[aoc_harness::aoc(day1, part2)] fn other(raw: &str) -> usize { raw.len() + 1 }
+aoc_harness::aoc_lib! { year = 2025 }
+"#,
+    )
+    .unwrap();
+    let measured = |part: &str, operation: &str| {
+        run(&[
+            "bench",
+            "-d",
+            "1",
+            "-p",
+            part,
+            operation,
+            "before",
+            "--sample-size",
+            "10",
+            "--warm-up-time",
+            "0.01",
+            "--measurement-time",
+            "0.02",
+        ])
+    };
+
+    success(measured("1", "--save-baseline"));
+    let reports = temp.path().join("artifacts/criterion/winter-library");
+    let baseline = fs::read_dir(&reports)
+        .unwrap()
+        .map(|e| e.unwrap().path().join("before"))
+        .find(|p| p.join("sample.json").is_file())
+        .unwrap();
+    let before = snapshot(&baseline);
+
+    for _ in 0..2 {
+        let output = success(measured("1", "--baseline"));
+
+        assert!(output.contains("change:"), "{output}");
+        assert_eq!(snapshot(&baseline), before);
+    }
+    let output = measured("2", "--baseline");
+
+    assert_eq!(snapshot(&baseline), before);
+    failure(output, "solver/day1/part2/default");
+    failure(measured("2", "--baseline"), "--save-baseline before");
+
+    success(measured("1", "--save-baseline"));
+    let replaced = snapshot(&baseline);
+
+    assert_ne!(replaced, before);
+    success(measured("2", "--save-baseline"));
+    assert_eq!(snapshot(&baseline), replaced);
+    success(measured("2", "--baseline"));
+}
+
+#[test]
+fn input_resolves_the_declared_event_without_compiling_unfinished_solvers() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let target = root.join("target");
+    fs::create_dir_all(&target).unwrap();
+    let temp = tempfile::tempdir_in(&target).unwrap();
+    let consumer = temp.path().join("consumer");
+    copy_fixture(
+        &root.join("fixtures/library"),
+        &consumer,
+        &root.join("crates/aoc-harness"),
+    );
+    for day in 1..=12 {
+        fs::write(
+            consumer.join(format!("input/2025/day{day}.txt")),
+            "cached\n",
+        )
+        .unwrap();
+    }
+    let cli = env!("CARGO_BIN_EXE_cargo-aoc-harness");
+    let source = consumer.join("src/lib.rs");
+    let run = |args: &[&str]| invoke(cli, &consumer, args, &target, temp.path());
+    for declaration in [
+        "aoc_harness::aoc_lib! { year = 2025 }",
+        "const EVENT_YEAR: u16 = 2025; aoc_harness::aoc_lib! { year = EVENT_YEAR }",
+        "const BASE: u16 = 2000; const fn event() -> u16 { BASE + 25 } aoc_harness::aoc_lib! { year = event() }",
+        "mod event { pub const YEAR: u16 = super::BASE + 25; } const BASE: u16 = 2000; aoc_harness::aoc_lib! { year = event::YEAR }",
+        "struct Event; impl Event { const YEAR: u16 = 2025; } aoc_harness::aoc_lib! { year = Event::YEAR }",
+        "use aoc_harness::*; const EVENT_YEAR: u16 = 2025; aoc_lib! { year = { EVENT_YEAR } }",
+    ] {
+        fs::write(&source, format!("mod unfinished;\n#[aoc_harness::aoc(day1, part1)] fn broken(_: &str) -> usize {{ unknown_value }}\n{declaration}\n")).unwrap();
+        let before = snapshot(&consumer);
+
+        let output = success(run(&["input", "-d", "1", "--offline"]));
+        let all = success(run(&["input", "--all", "--offline"]));
+
+        assert!(output.contains("input/2025/day1.txt"), "{declaration}: {output}");
+        assert!(all.contains("12 cached"), "{declaration}: {all}");
+        assert_eq!(snapshot(&consumer), before);
+    }
+
+    fs::write(consumer.join("src/event.rs"), "pub const YEAR: u16 = 2025;").unwrap();
+    fs::write(&source, "mod unfinished; mod event; use event::YEAR as EVENT_YEAR; aoc_harness::aoc_lib! { year = EVENT_YEAR }").unwrap();
+
+    success(run(&["input", "-d", "1", "--offline"]));
+
+    fs::write(&source, "#[cfg(feature=\"bonus\")] const YEAR: u16 = 2025; #[cfg(not(feature=\"bonus\"))] const YEAR: u16 = 2024; mod unfinished; aoc_harness::aoc_lib! { year = YEAR }").unwrap();
+
+    let output = success(run(&[
+        "input",
+        "-d",
+        "1",
+        "--offline",
+        "--features",
+        "bonus",
+    ]));
+
+    assert!(output.contains("input/2025/day1.txt"));
+
+    for declaration in [
+        "pub fn unrelated() {}",
+        "aoc_harness::aoc_lib! { year = UNKNOWN }",
+    ] {
+        fs::write(&source, declaration).unwrap();
+        let output = run(&["input", "-d", "1", "--session-file", "missing-session"]);
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+
+        assert!(!output.status.success());
+        assert!(
+            diagnostic.contains("cannot determine the aoc_lib! event year"),
+            "{diagnostic}"
+        );
+        assert!(diagnostic.contains("winter-library"));
+        assert!(diagnostic.contains(source.to_str().unwrap()));
+        assert!(!diagnostic.contains("read session"));
+        assert!(output.stdout.is_empty());
+    }
+    failure(
+        run(&["input", "--year", "2025", "-d", "1"]),
+        "unexpected argument '--year'",
+    );
 }

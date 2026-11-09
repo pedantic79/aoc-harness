@@ -17,7 +17,7 @@ runtime and re-exports `aoc`, `aoc_generator`, `aoc_lib`, and `aoc_main` from
 
 ```toml
 [dependencies]
-aoc-harness = "0.3.0"
+aoc-harness = "0.4.0"
 ```
 
 ```rust,ignore
@@ -37,12 +37,24 @@ standalone binary with `aoc_harness::aoc_main! { year = 2025 }`.
 
 Select multiple days with `--day 1,3` or `--day 1 --day 3`; `-d` is the short form
 of `--day`. Select a part with `--part 1` or `-p 1`. Use `--all-days` to select
-every registered day.
+every registered day. `run --all-solutions` compares each part's displayed
+answers exactly, including whitespace, and fails if any variants disagree.
+`run --format json` provides ordered results, string answers, integer nanosecond
+timings, and partial failure or disagreement details; solution output goes to
+stderr. Plain `run` keeps the human-readable report.
+
+`cargo aoc-harness input -d 1` and `input --all` use the event year declared in
+`aoc_lib!`, including constant expressions, without compiling unfinished solvers.
+The former `input --year YEAR` flag has been removed; drop it from scripts.
 
 `cargo aoc-harness bench` benchmarks solvers by default. Select any combination
 of `generator`, `solver`, `end-to-end`, and `full-run` with `--family`, for example
 `cargo aoc-harness bench --family generator,solver`. Comma-separated values and
-repeated `--family` flags work with measured benchmarks and `--smoke`.
+repeated `--family` flags work with measured benchmarks and `--smoke`. Smoke
+executes each workload once without measurements or reports. Save selected
+measurements with `--save-baseline NAME`, then compare edits with
+`--baseline NAME`, preserving the reference. Missing workload references fail.
+Choose one baseline operation per measured run; neither works with `--smoke`.
 Profiling uses the same `--family` and `--filter` selection, defaults to
 `end-to-end`, and records each selected workload separately.
 

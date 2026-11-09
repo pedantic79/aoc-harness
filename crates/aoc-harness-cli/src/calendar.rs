@@ -13,13 +13,12 @@ impl EventCalendar {
 }
 
 pub(crate) fn select(
-    year: Option<u16>,
+    year: u16,
     days: &[u8],
     all: bool,
     now: DateTime<Utc>,
 ) -> Result<(u16, Vec<u8>), String> {
     let est = now.with_timezone(&FixedOffset::west_opt(5 * 3600).unwrap());
-    let year = year.unwrap_or(est.year() as u16);
     let mut days = days.to_vec();
     if all {
         let length = EventCalendar::length(year)
@@ -86,19 +85,19 @@ mod tests {
         let first = at("2025-12-01T05:00:00Z");
         let after = at("2026-11-05T00:00:00Z");
 
-        assert!(select(None, &[], false, before).is_err());
-        assert_eq!(select(None, &[], false, first).unwrap(), (2025, vec![1]));
-        assert_eq!(select(Some(2025), &[], true, first).unwrap().1, [1]);
-        assert_eq!(select(Some(2025), &[], true, after).unwrap().1.len(), 12);
-        assert_eq!(select(Some(2024), &[], true, after).unwrap().1.len(), 25);
-        assert!(select(Some(2025), &[13], false, after).is_err());
-        assert!(select(Some(2026), &[], true, after).is_err());
-        assert!(select(Some(2026), &[1], false, after).is_err());
-        assert!(select(Some(2025), &[], false, after).is_err());
+        assert!(select(2025, &[], false, before).is_err());
+        assert_eq!(select(2025, &[], false, first).unwrap(), (2025, vec![1]));
+        assert_eq!(select(2025, &[], true, first).unwrap().1, [1]);
+        assert_eq!(select(2025, &[], true, after).unwrap().1.len(), 12);
+        assert_eq!(select(2024, &[], true, after).unwrap().1.len(), 25);
+        assert!(select(2025, &[13], false, after).is_err());
+        assert!(select(2026, &[], true, after).is_err());
+        assert!(select(2026, &[1], false, after).is_err());
+        assert!(select(2025, &[], false, after).is_err());
         assert!(validate(2014, &[1], after).is_err());
         assert!(validate(2027, &[1], after).is_err());
         assert_eq!(
-            select(Some(2026), &[3, 1, 3], false, at("2026-12-04T05:00:00Z"))
+            select(2026, &[3, 1, 3], false, at("2026-12-04T05:00:00Z"))
                 .unwrap()
                 .1,
             [1, 3]

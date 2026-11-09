@@ -4,19 +4,20 @@ pub use aoc_harness_macros::{aoc, aoc_generator, aoc_lib, aoc_main};
 #[doc(hidden)]
 pub use criterion;
 
+mod baselines;
+pub use baselines::name as parse_baseline_name;
+mod run_report;
+
 use clap::{ColorChoice, Parser, ValueEnum};
 use std::{
-    collections::BTreeMap,
-    error::Error as StdError,
-    fmt,
-    io::IsTerminal,
-    path::PathBuf,
-    time::{Duration, Instant},
+    collections::BTreeMap, error::Error as StdError, fmt, io::IsTerminal, path::PathBuf,
+    time::Duration,
 };
 
 #[derive(Debug)]
 pub struct Error {
     message: String,
+    phase: Option<String>,
     pub generator: Duration,
     pub solver: Duration,
 }
@@ -25,6 +26,7 @@ impl Error {
     pub fn message(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            phase: None,
             generator: Duration::ZERO,
             solver: Duration::ZERO,
         }
@@ -37,17 +39,21 @@ impl Error {
         phase: &str,
         error: E,
     ) -> Self {
-        Self::message(format!(
+        let mut error = Self::message(format!(
             "day {day} part {} [{name}] {phase}: {error}",
             part.map(|p| p.to_string()).unwrap_or_else(|| "*".into())
-        ))
+        ));
+        error.phase = Some(phase.into());
+        error
     }
 
     pub fn no_value(day: u8, part: Option<u8>, name: &str, phase: &str) -> Self {
-        Self::message(format!(
+        let mut error = Self::message(format!(
             "day {day} part {} [{name}] {phase}: returned None",
             part.map(|p| p.to_string()).unwrap_or_else(|| "*".into())
-        ))
+        ));
+        error.phase = Some(phase.into());
+        error
     }
 
     pub fn context(mut self, day: u8, part: u8, name: &str) -> Self {
@@ -188,6 +194,13 @@ pub enum ProfileFamily {
     FullRun,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub enum RunFormat {
+    #[default]
+    Human,
+    Json,
+}
+
 impl ProfileFamily {
     fn prefix(self) -> &'static str {
         match self {
@@ -217,8 +230,14 @@ pub struct Options {
     pub part: Option<u8>,
     #[arg(long, requires_all = ["day", "part"], conflicts_with = "all_solutions")]
     pub solution: Option<String>,
+    /// Run every variant and fail if displayed answers disagree for any day/part.
     #[arg(long)]
     pub all_solutions: bool,
+    /// Run output format; JSON preserves answer text and uses integer nanoseconds.
+    #[arg(long, value_enum, default_value = "human")]
+    pub format: RunFormat,
+    #[arg(long, hide = true)]
+    pub run_report: Option<PathBuf>,
     #[arg(short = 'i', long, requires = "day", conflicts_with = "all_days")]
     pub input: Option<PathBuf>,
     /// Regex narrowing the selected benchmark or profiling families by workload name.
@@ -235,6 +254,12 @@ pub struct Options {
     /// Execute and validate selected benchmark families once, without statistical measurement.
     #[arg(long)]
     pub smoke: bool,
+    /// Save selected measurements under NAME, replacing those reference measurements.
+    #[arg(long, value_parser = baselines::name, conflicts_with_all = ["baseline", "smoke"])]
+    pub save_baseline: Option<String>,
+    /// Compare with NAME without changing it; every selected workload must have a baseline.
+    #[arg(long, value_parser = baselines::name, conflicts_with_all = ["save_baseline", "smoke"])]
+    pub baseline: Option<String>,
     /// Workload families, comma-separated or repeated (bench default: solver; profile default: end-to-end).
     #[arg(long, value_enum, value_delimiter = ',')]
     pub family: Vec<ProfileFamily>,
@@ -263,12 +288,16 @@ impl Default for Options {
             part: None,
             solution: None,
             all_solutions: false,
+            format: RunFormat::Human,
+            run_report: None,
             input: None,
             filter: None,
             sample_size: 100,
             warm_up_time: 3.,
             measurement_time: 5.,
             smoke: false,
+            save_baseline: None,
+            baseline: None,
             family: Vec::new(),
             duration: 10.,
             profile_status: None,
@@ -474,66 +503,6 @@ impl Registry {
         Ok(inputs)
     }
 
-    pub fn run(&self, options: &Options) -> Result<(), Error> {
-        let plan = self.plan(options)?;
-        let selected = plan.selected;
-        let inputs = self.load_inputs(&selected, options)?;
-        let mut results = Vec::with_capacity(selected.len());
-        let mut failure = None;
-        let mut generator = Duration::ZERO;
-        let mut solver = Duration::ZERO;
-
-        let start = Instant::now();
-        for solution in &selected {
-            match (solution.run)(&inputs[&solution.day]) {
-                Ok(invocation) => {
-                    generator += invocation.generator;
-                    solver += invocation.solver;
-                    results.push((solution, invocation));
-                }
-                Err(error) => {
-                    generator += error.generator;
-                    solver += error.solver;
-                    failure = Some(error.context(solution.day, solution.part, solution.name));
-                    break;
-                }
-            }
-        }
-        let elapsed = start.elapsed();
-
-        println!("AOC {}\n", self.year);
-        for (solution, result) in results {
-            let variant = if solution.named {
-                format!(" - {}", solution.name)
-            } else {
-                String::new()
-            };
-            println!(
-                "Day {} - Part {}{}: {}\n\tgenerator: {:?},\n\trunner: {:?}\n",
-                solution.day,
-                solution.part,
-                variant,
-                result.answer,
-                result.generator,
-                result.solver
-            );
-        }
-        let scope = self.scope(options);
-        let status = if failure.is_some() {
-            "Partial run"
-        } else if options.all_solutions {
-            "Comparison run"
-        } else {
-            "Full run"
-        };
-        println!("{status} ({scope}, {} selected):\n\tgenerator: {generator:?},\n\trunner: {solver:?},\n\ttotal: {elapsed:?}", selected.len());
-
-        match failure {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
-    }
-
     pub fn list(&self, options: &Options) -> Result<(), Error> {
         let selected = self.select(options, true)?;
         let defaults_options = Options {
@@ -680,8 +649,81 @@ impl Registry {
     }
 
     pub fn bench(&self, options: &Options) -> Result<(), Error> {
+        if (options.save_baseline.is_some() || options.baseline.is_some())
+            && (options.smoke || !matches!(options.action, Action::Bench))
+        {
+            return Err(Error::message(
+                "baseline operations require a measured bench run",
+            ));
+        }
+        if options.save_baseline.is_some() && options.baseline.is_some() {
+            return Err(Error::message(
+                "choose either --save-baseline or --baseline",
+            ));
+        }
+        for name in options.save_baseline.iter().chain(&options.baseline) {
+            baselines::name(name).map_err(Error::message)?;
+        }
+
         let plan = self.plan(options)?;
         let inputs = self.load_inputs(&plan.required, options)?;
+
+        let matches = |label: &str| plan.matches(label);
+        let selected = &plan.selected;
+        let defaults = &plan.defaults;
+        let generators = &plan.generators;
+        let full_label = &plan.full_label;
+        let labels = plan.labels();
+        let count = labels.len();
+
+        if options.smoke {
+            for g in generators.iter().filter(|g| matches(&generator_label(g))) {
+                (g.check)(&inputs[&g.day])?;
+                println!(
+                    "{}: {}",
+                    if plan.profiling {
+                        "Profiling workload validated"
+                    } else {
+                        "Smoke"
+                    },
+                    generator_label(g)
+                );
+            }
+            for s in selected {
+                for phase in ["solver", "end-to-end"] {
+                    if matches(&solution_label(s, phase)) {
+                        (s.execute)(&inputs[&s.day])
+                            .map_err(|e| e.context(s.day, s.part, s.name))?;
+                        println!(
+                            "{}: {}",
+                            if plan.profiling {
+                                "Profiling workload validated"
+                            } else {
+                                "Smoke"
+                            },
+                            solution_label(s, phase)
+                        );
+                    }
+                }
+            }
+            if matches(full_label) {
+                for s in defaults {
+                    (s.execute)(&inputs[&s.day])?;
+                }
+                println!(
+                    "{}: {full_label}",
+                    if plan.profiling {
+                        "Profiling workload validated"
+                    } else {
+                        "Smoke"
+                    }
+                );
+            }
+            if !plan.profiling {
+                println!("Benchmark smoke passed: {count} families (no statistical reports; omit --smoke to measure)");
+            }
+            return Ok(());
+        }
 
         // Validate before Criterion measures, after planning has validated filters.
         for solution in &plan.required {
@@ -702,49 +744,14 @@ impl Registry {
             (generator.check)(&inputs[&generator.day])?;
         }
 
-        let matches = |label: &str| plan.matches(label);
-        let selected = &plan.selected;
-        let defaults = &plan.defaults;
-        let generators = &plan.generators;
-        let full_label = &plan.full_label;
-        let labels = plan.labels();
-        let count = labels.len();
-
-        if options.smoke {
-            if plan.profiling {
-                for label in &labels {
-                    println!("Profiling workload validated: {label}");
-                }
-                return Ok(());
-            }
-
-            for g in generators.iter().filter(|g| matches(&generator_label(g))) {
-                (g.check)(&inputs[&g.day])?;
-                println!("Smoke: {}", generator_label(g));
-            }
-            for s in selected {
-                for phase in ["solver", "end-to-end"] {
-                    if matches(&solution_label(s, phase)) {
-                        (s.execute)(&inputs[&s.day])
-                            .map_err(|e| e.context(s.day, s.part, s.name))?;
-                        println!("Smoke: {}", solution_label(s, phase));
-                    }
-                }
-            }
-            if matches(full_label) {
-                for s in defaults {
-                    (s.execute)(&inputs[&s.day])?;
-                }
-                println!("Smoke: {full_label}");
-            }
-            println!("Benchmark smoke passed: {count} families (no statistical reports; omit --smoke to measure)");
-            return Ok(());
-        }
-
         let report = options
             .report_dir
             .clone()
             .unwrap_or_else(|| PathBuf::from(self.manifest_dir).join("target/criterion"));
+        if let Some(name) = &options.baseline {
+            baselines::require(&report, name, &labels)?;
+        }
+
         let mut criterion = criterion::Criterion::default()
             .with_output_color(match options.color {
                 ColorChoice::Always => true,
@@ -759,6 +766,11 @@ impl Registry {
             .sample_size(options.sample_size as usize)
             .warm_up_time(Duration::from_secs_f64(options.warm_up_time))
             .measurement_time(Duration::from_secs_f64(options.measurement_time));
+        if let Some(name) = &options.save_baseline {
+            criterion = criterion.save_baseline(name.clone());
+        } else if let Some(name) = &options.baseline {
+            criterion = criterion.retain_baseline(name.clone(), true);
+        }
         if plan.profiling {
             // Criterion 0.5 exposes this setter as a hidden API. Keep the
             // version-specific profiling integration here, beside configuration.
@@ -838,7 +850,14 @@ pub fn entry(registry: Registry) -> i32 {
         };
     }
 
-    let options = Options::parse_from(args);
+    let options = Options::parse_from(&args);
+    if matches!(options.action, Action::Run)
+        && options.format == RunFormat::Json
+        && options.run_report.is_none()
+    {
+        return run_report::isolated(&args);
+    }
+
     let result = if matches!(options.action, Action::Profile) {
         options
             .profile_working_dir

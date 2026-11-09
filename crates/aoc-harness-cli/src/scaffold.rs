@@ -188,24 +188,32 @@ impl ScaffoldPlan {
     }
 
     pub fn apply(self) -> Result<(), String> {
-        self.apply_with(|temporary, root| {
-            temporary
-                .persist(root)
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-        })
+        self.apply_to(&mut std::io::stdout())
+    }
+
+    pub fn apply_to(self, progress: &mut dyn Write) -> Result<(), String> {
+        self.apply_with(
+            |temporary, root| {
+                temporary
+                    .persist(root)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            },
+            progress,
+        )
     }
 
     fn apply_with(
         self,
         replace: impl FnOnce(tempfile::NamedTempFile, &Path) -> Result<(), String>,
+        progress: &mut dyn Write,
     ) -> Result<(), String> {
         safe_source(&self.package, &self.root)?;
         if fs::read_to_string(&self.root).map_err(|e| e.to_string())? != self.original {
             return Err("source changed since scaffolding preflight; no files written".into());
         }
         if self.files.is_empty() {
-            println!("No source changes required");
+            writeln!(progress, "No source changes required").map_err(|e| e.to_string())?;
             return Ok(());
         }
         for file in &self.files {
@@ -273,7 +281,7 @@ impl ScaffoldPlan {
             });
         }
         for file in &self.files {
-            println!("Generated: {}", file.path.display());
+            writeln!(progress, "Generated: {}", file.path.display()).map_err(|e| e.to_string())?;
         }
         Ok(())
     }
@@ -323,7 +331,10 @@ mod tests {
 
         assert_eq!(plan.files.len(), 1);
         assert!(plan
-            .apply_with(|_, _| Err("injected write failure".into()))
+            .apply_with(
+                |_, _| Err("injected write failure".into()),
+                &mut std::io::stdout()
+            )
             .is_err());
         assert!(!temp.path().join("day5.rs").exists());
         assert_eq!(

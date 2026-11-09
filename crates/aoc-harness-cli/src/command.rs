@@ -33,7 +33,7 @@ pub(crate) struct Request {
     pub action: Action,
     pub runtime: Vec<OsString>,
     pub days: Vec<u8>,
-    pub year: Option<u16>,
+    pub json: bool,
     pub all: bool,
     pub generate: bool,
     pub dry_run: bool,
@@ -80,7 +80,9 @@ fn action_command(action: Action) -> Command {
             "Benchmark the latest registered day, including variants; defaults to solvers"
         }
         Action::Profile => "Profile workloads from the latest registered day by default",
-        Action::Input => "Download missing puzzle inputs without compiling solutions",
+        Action::Input => {
+            "Download inputs for the project's aoc_lib! year without compiling solutions"
+        }
         Action::Generate => {
             "Create day modules without credentials, network access, or compilation"
         }
@@ -111,8 +113,23 @@ fn action_command(action: Action) -> Command {
             .arg(value("solution", "Named solution").requires_all(["day", "part"]));
     }
     if action == Action::Run {
-        command =
-            command.arg(flag("all-solutions", "Run every variant").conflicts_with("solution"));
+        command = command
+            .after_help("Examples:\n  cargo aoc-harness run --day 4\n  cargo aoc-harness run --day 1 --all-solutions\n  cargo aoc-harness run --all-days --format json\n\n--all-solutions compares displayed answers exactly, including whitespace.\nDisagreements cause a nonzero exit after execution completes.\nJSON stdout contains one report; build, download, and solution output goes to stderr.\nAll options may appear before or after the command.")
+            .arg(
+                flag(
+                    "all-solutions",
+                    "Run every variant; fail if displayed answers disagree",
+                )
+                .conflicts_with("solution"),
+            )
+            .arg(
+                value(
+                    "format",
+                    "Output format; JSON preserves answer text and reports integer nanoseconds",
+                )
+                .value_parser(clap::value_parser!(aoc_harness::RunFormat))
+                .default_value("human"),
+            );
     }
     if matches!(action, Action::Run | Action::Bench | Action::Profile) {
         command = command
@@ -149,14 +166,13 @@ fn action_command(action: Action) -> Command {
     }
     if action == Action::Input {
         command = command
+            .after_help("Examples:\n  cargo aoc-harness input --day 1\n  cargo aoc-harness input --all\n\nThe selected package's aoc_lib! declaration supplies the event year.\nWithout --day or --all, today's day is selected only during that event's release window.\nAll options may appear before or after the command.")
             .arg(
-                value("year", "Event year; defaults to the current EST year")
-                    .value_parser(clap::value_parser!(u16).range(2015..)),
-            )
-            .arg(
-                flag("all", "Download all released days of a known event")
-                    .requires("year")
-                    .conflicts_with("day"),
+                flag(
+                    "all",
+                    "Download all released days of the project's declared event",
+                )
+                .conflicts_with("day"),
             )
             .arg(
                 value("session-file", "Override the shared session source")
@@ -197,7 +213,7 @@ fn action_command(action: Action) -> Command {
     }
     if action == Action::Bench {
         command = command
-            .after_help("Examples:\n  cargo aoc-harness bench --day 4\n  cargo aoc-harness bench --day 1,3 --family generator,solver\n  cargo aoc-harness bench --all-days --family full-run\n\nUse comma-separated values or repeat --family to select multiple families.\nAll options may appear before or after the command.")
+            .after_help("Examples:\n  cargo aoc-harness bench --day 4\n  cargo aoc-harness bench --day 1,3 --family generator,solver\n  cargo aoc-harness bench --all-days --family full-run\n  cargo aoc-harness bench --day 4 --save-baseline before\n  cargo aoc-harness bench --day 4 --baseline before\n\nUse comma-separated values or repeat --family to select multiple families.\nChoose one baseline operation per measured run; neither works with --smoke.\nBaseline names are single directory components excluding base, new, change, report, and profile.\nAll options may appear before or after the command.")
             .next_help_heading("Benchmark options")
             .arg(
                 value("sample-size", "Samples per benchmark (at least 10)")
@@ -207,8 +223,14 @@ fn action_command(action: Action) -> Command {
             .arg(value("measurement-time", "Measurement seconds").value_parser(seconds))
             .arg(flag(
                 "smoke",
-                "Validate selected families without measurements or reports",
+                "Execute each selected workload once; no measurements or reports",
             ))
+            .arg(value("save-baseline", "Save selected measurements as NAME, replacing those references")
+                .value_name("NAME").value_parser(aoc_harness::parse_baseline_name)
+                .conflicts_with_all(["baseline", "smoke"]))
+            .arg(value("baseline", "Compare with NAME without changing it; fail for missing workloads")
+                .value_name("NAME").value_parser(aoc_harness::parse_baseline_name)
+                .conflicts_with_all(["save-baseline", "smoke"]))
             .arg(
                 flag("open", "Open the successful measured HTML report")
                     .short('o')
@@ -393,6 +415,8 @@ pub(crate) fn parse(mut args: Vec<OsString>) -> Result<Request, clap::Error> {
         "filter",
         "input",
         "duration",
+        "save-baseline",
+        "baseline",
     ] {
         if let Some(values) = matches.try_get_raw(name).ok().flatten() {
             runtime.push(format!("--{name}").into());
@@ -410,6 +434,14 @@ pub(crate) fn parse(mut args: Vec<OsString>) -> Result<Request, clap::Error> {
                 runtime.extend(values.map(OsString::from));
             }
         }
+    }
+    if matches
+        .try_get_one::<aoc_harness::RunFormat>("format")
+        .ok()
+        .flatten()
+        == Some(&aoc_harness::RunFormat::Json)
+    {
+        runtime.extend([OsString::from("--format"), OsString::from("json")]);
     }
     if let Some(values) = matches.try_get_raw("family").ok().flatten() {
         for value in values {
@@ -456,7 +488,11 @@ pub(crate) fn parse(mut args: Vec<OsString>) -> Result<Request, clap::Error> {
         action,
         runtime,
         days,
-        year: matches.try_get_one::<u16>("year").ok().flatten().copied(),
+        json: matches
+            .try_get_one::<aoc_harness::RunFormat>("format")
+            .ok()
+            .flatten()
+            == Some(&aoc_harness::RunFormat::Json),
         all: get_flag("all"),
         generate: get_flag("generate"),
         dry_run: get_flag("dry-run"),
@@ -630,6 +666,95 @@ mod tests {
             vec!["profile", "--profiler", "unknown"],
         ] {
             assert!(parse_args(&args).is_err(), "unexpectedly accepted {args:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod report_and_baseline_tests {
+    use super::*;
+
+    #[test]
+    fn baseline_operations_validate_names_and_conflicts_before_building() {
+        for operation in ["--save-baseline", "--baseline"] {
+            for name in [
+                "",
+                ".",
+                "..",
+                "../before",
+                "a/b",
+                "a\\b",
+                "/tmp",
+                "base",
+                "NEW",
+                "change",
+                "report",
+                "profile",
+            ] {
+                let error = parse(["bench", operation, name].map(OsString::from).to_vec())
+                    .err()
+                    .unwrap();
+
+                assert_eq!(
+                    error.kind(),
+                    clap::error::ErrorKind::ValueValidation,
+                    "{operation} {name:?}"
+                );
+            }
+            let error = parse(
+                ["bench", operation, "before", "--smoke"]
+                    .map(OsString::from)
+                    .to_vec(),
+            )
+            .err()
+            .unwrap();
+
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+            let request =
+                parse([operation, "before", "bench"].map(OsString::from).to_vec()).unwrap();
+
+            assert!(request
+                .runtime
+                .windows(2)
+                .any(|pair| pair == [operation, "before"]));
+        }
+        let error = parse(
+            ["bench", "--save-baseline", "before", "--baseline", "other"]
+                .map(OsString::from)
+                .to_vec(),
+        )
+        .err()
+        .unwrap();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn report_options_apply_only_to_runs_and_removed_year_is_unknown() {
+        let request = parse(["--format", "json", "run"].map(OsString::from).to_vec()).unwrap();
+
+        assert!(request.json);
+        assert!(request
+            .runtime
+            .windows(2)
+            .any(|pair| pair == ["--format", "json"]));
+        for args in [
+            vec!["bench", "--format", "json"],
+            vec!["list", "--format", "json"],
+            vec!["input", "--year", "2025"],
+            vec!["run", "--baseline", "before"],
+            vec!["profile", "--save-baseline", "before"],
+        ] {
+            let error = parse(args.iter().map(OsString::from).collect())
+                .err()
+                .unwrap();
+
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::UnknownArgument,
+                "{args:?}"
+            );
         }
     }
 }

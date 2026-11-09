@@ -17,6 +17,7 @@ mod input;
 mod profiling;
 mod reports;
 mod scaffold;
+mod source_year;
 
 #[derive(Debug, Default, Parser)]
 #[command(
@@ -249,7 +250,7 @@ fn execute(request: command::Request) -> Result<i32, String> {
         action,
         runtime,
         days,
-        year,
+        json,
         all,
         generate,
         dry_run,
@@ -274,8 +275,14 @@ fn execute(request: command::Request) -> Result<i32, String> {
         .transpose()?;
 
     let project = discover(&options)?;
+    let mut progress: Box<dyn Write> = if json {
+        Box::new(io::stderr())
+    } else {
+        Box::new(io::stdout())
+    };
     if matches!(action, Action::Input | Action::Generate) {
         let (year, days) = if action == Action::Input {
+            let year = source_year::resolve(&project, &options)?;
             calendar::select(year, &days, all, chrono::Utc::now())?
         } else {
             (0, days)
@@ -312,7 +319,7 @@ fn execute(request: command::Request) -> Result<i32, String> {
 
     if generate {
         scaffold::ScaffoldPlan::prepare(&project.manifest_dir, &project.library_source, &days)?
-            .apply()?;
+            .apply_to(&mut progress)?;
     }
     let executable = build_bridge(&options, &project)?;
     let mut profile_workloads = Vec::new();
@@ -338,12 +345,13 @@ fn execute(request: command::Request) -> Result<i32, String> {
         }
         if download {
             calendar::validate(year, &required, chrono::Utc::now())?;
-            input::acquire(
+            input::acquire_to(
                 &project.manifest_dir,
                 year,
                 &required,
                 options.offline,
                 session_file.as_deref(),
+                &mut progress,
             )?;
         }
     }

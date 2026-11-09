@@ -208,23 +208,63 @@ pub(crate) fn acquire(
     offline: bool,
     session_file: Option<&Path>,
 ) -> Result<(), String> {
-    acquire_with(
+    acquire_to(
+        manifest,
+        year,
+        days,
+        offline,
+        session_file,
+        &mut std::io::stdout(),
+    )
+}
+
+pub(crate) fn acquire_to(
+    manifest: &Path,
+    year: u16,
+    days: &[u8],
+    offline: bool,
+    session_file: Option<&Path>,
+    progress: &mut dyn Write,
+) -> Result<(), String> {
+    acquire_with_progress(
         manifest,
         year,
         days,
         offline,
         || credentials::resolve(session_file),
         &mut HttpTransport::default(),
+        progress,
     )
 }
 
+#[cfg(test)]
 fn acquire_with(
+    manifest: &Path,
+    year: u16,
+    days: &[u8],
+    offline: bool,
+    resolve: impl FnMut() -> Result<Session, String>,
+    transport: &mut impl Transport,
+) -> Result<(), String> {
+    acquire_with_progress(
+        manifest,
+        year,
+        days,
+        offline,
+        resolve,
+        transport,
+        &mut std::io::stdout(),
+    )
+}
+
+fn acquire_with_progress(
     manifest: &Path,
     year: u16,
     days: &[u8],
     offline: bool,
     mut resolve: impl FnMut() -> Result<Session, String>,
     transport: &mut impl Transport,
+    progress: &mut dyn Write,
 ) -> Result<(), String> {
     let mut session = None;
     let (mut cached_count, mut downloaded, mut failed) = (0, 0, 0);
@@ -232,7 +272,8 @@ fn acquire_with(
     for &day in days {
         let result = (|| {
             if let Some(path) = cached(manifest, year, day).map_err(|e| (e, false))? {
-                println!("Cached: {}", path.display());
+                writeln!(progress, "Cached: {}", path.display())
+                    .map_err(|e| (e.to_string(), true))?;
                 return Ok(false);
             }
             if offline {
@@ -253,13 +294,15 @@ fn acquire_with(
             };
             validate_body(&body, "text/plain").map_err(|e| (e.message, e.stop))?;
             let created = publish(manifest, year, day, &body).map_err(|e| (e, false))?;
-            println!(
+            writeln!(
+                progress,
                 "{}: {}",
                 if created { "Downloaded" } else { "Cached" },
                 manifest
                     .join(format!("input/{year}/day{day}.txt"))
                     .display()
-            );
+            )
+            .map_err(|e| (e.to_string(), true))?;
             Ok(created)
         })();
         match result {
@@ -276,7 +319,11 @@ fn acquire_with(
             }
         }
     }
-    println!("Inputs: {cached_count} cached, {downloaded} downloaded, {failed} failed");
+    writeln!(
+        progress,
+        "Inputs: {cached_count} cached, {downloaded} downloaded, {failed} failed"
+    )
+    .map_err(|e| e.to_string())?;
     if errors.is_empty() {
         Ok(())
     } else {

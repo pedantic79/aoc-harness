@@ -10,8 +10,9 @@ entry points, so you can focus on the puzzles.
 ## Features
 
 - Download puzzle inputs and generate day modules.
-- Run solutions with separate generator, solver, and full-run timings.
-- Compare named implementations with automatic Criterion benchmarks.
+- Run solutions with separate generator, solver, and full-run timings, or JSON reports.
+- Check agreement between every variant of a puzzle part.
+- Compare named implementations with automatic Criterion benchmarks and saved baselines.
 - Borrow, mutate, or consume parsed input without requiring `Clone` or `'static`.
 - Profile a workload with Samply, Flamegraph, Linux perf, or macOS Instruments.
 
@@ -44,7 +45,7 @@ macros through `aoc_harness` in your solution code.
 
 ```toml
 [dependencies]
-aoc-harness = "0.3.0"
+aoc-harness = "0.4.0"
 ```
 
 Replace `src/lib.rs` with your day modules and event year:
@@ -138,8 +139,8 @@ with `chmod 600 "$HOME/.adventofcode.session"`.
 
 ```sh
 cargo aoc-harness credentials status
-cargo aoc-harness input --year 2025 --day 1
-cargo aoc-harness input --year 2025 --all
+cargo aoc-harness input --day 1
+cargo aoc-harness input --all
 ```
 
 `credentials status` validates the local token format without printing the token
@@ -149,8 +150,15 @@ then the home file is used.
 
 Inputs are stored in `input/{year}/day{day}.txt` relative to your solution
 project's `Cargo.toml`. Existing inputs are preserved. `input` downloads without
-compiling your solutions, so it also works while a solver is unfinished.
-Keep personal inputs out of Git.
+compiling your solutions, so it also works while a solver is unfinished. The event
+year always comes from the selected package's `aoc_lib!` declaration, including
+expressions such as `year = EVENT_YEAR`. An unresolved year reports the package
+and library source before credentials or downloads are attempted. `--all` uses
+that event's released days; omitting `--day` selects today's day only during that
+event's December release window. Keep personal inputs out of Git.
+
+The former `input --year YEAR` flag has been removed. Migrate scripts by dropping
+that flag and its value, for example `cargo aoc-harness input --all`.
 
 Zero-padded input names such as `day01.txt` also work; `day1.txt` takes precedence
 when both exist. The harness removes trailing `\n` characters before parsing and
@@ -175,6 +183,7 @@ cargo aoc-harness run --day 1
 cargo aoc-harness run --day 1 --part 2 --solution sorted
 cargo aoc-harness run --day 1 --all-solutions
 cargo aoc-harness run --all-days
+cargo aoc-harness run --all-days --format json
 cargo aoc-harness list
 ```
 
@@ -214,6 +223,28 @@ Full run (2025 day 1, 2 selected):
 selected pass, including parsing and cleanup. Compilation, input file I/O, and
 answer printing happen outside that interval.
 
+`--all-solutions` compares the displayed answers of every completed variant for
+each day and part, including the default. Whitespace and line breaks must match
+exactly. A disagreement prints each variant's answer and causes a nonzero exit
+status after all selected implementations finish. Generator and solver failures
+still stop execution and preserve the completed results. Agreement alone does
+not establish correctness; keep tests for known answers.
+
+`run --format json` writes one JSON object to stdout. Build messages, download
+progress, and anything printed by solution code go to stderr. The default
+`--format human` keeps the terminal report. Answers are formatted once after the
+full-run timer stops, and JSON preserves them as strings, including numeric,
+negative, and multiline answers. Results are ordered by day, part, and variant.
+
+The report has `year`, `outcome` (`success`, `disagreement`, or `failed`),
+`results`, `totals`, `failure`, and `disagreements`. Each result contains `day`,
+`part`, `variant` (`default` for unnamed implementations), `answer`,
+`generator_ns`, and `solver_ns`. Totals contain `generator_ns`, `solver_ns`, and
+`total_ns`, all integer nanoseconds. On a generator or solver failure, `failure`
+identifies the day, part, variant, phase, and message; otherwise it is `null`.
+Each disagreement identifies its day, part, and variants with their answers.
+JSON and human reports use the same exit status.
+
 Downloads happen only when requested. Add `--download` to `run`, `bench`, or
 `profile` to fetch missing inputs before execution:
 
@@ -232,7 +263,7 @@ cargo aoc-harness generate --day 2
 
 Generation adds `src/day2.rs` and its module declaration in `src/lib.rs`.
 It works offline, preserves existing day modules, and can be combined with input
-acquisition using `cargo aoc-harness input --year 2025 --day 2 --generate`.
+acquisition using `cargo aoc-harness input --day 2 --generate`.
 Implement the generated stubs before running the new day.
 
 ## Benchmarking solutions
@@ -273,9 +304,28 @@ cargo aoc-harness bench --day 1 --filter '^solver/' --sample-size 20 \
 cargo aoc-harness bench --day 1 --smoke
 ```
 
-`--smoke` checks the selected benchmark families without statistical measurement.
+`--smoke` executes each selected workload exactly once, using that execution to
+validate it, without statistical measurement or Criterion reports. A solver
+selected in both `solver` and `end-to-end` runs once per workload; `full-run`
+executes one complete pass through the selected default implementations.
 Measured reports go to `<target-dir>/criterion/<your-package>/`; `--open` opens
 the HTML report after a successful run.
+
+Save a reference measurement, then compare subsequent edits against it:
+
+```sh
+cargo aoc-harness bench -d 4 -p 2 --save-baseline before
+cargo aoc-harness bench -d 4 -p 2 --baseline before
+```
+
+Both operations honor day, part, solution, family, and workload filters and use
+the package's Criterion report directory. Saving again replaces only the
+selected workloads' references. Comparisons report Criterion's timing change
+and preserve the named reference. Every selected workload must have a saved
+measurement; otherwise the command fails with the missing name and workload and
+suggests `--save-baseline NAME`. Choose one operation per measured run; neither
+can be combined with `--smoke`. Names must be single directory components other
+than Criterion's reserved `base`, `new`, `change`, `report`, and `profile` directories.
 
 ## Profiling solutions
 

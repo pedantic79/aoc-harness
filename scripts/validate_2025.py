@@ -71,13 +71,14 @@ def main():
     common = ["--manifest-path", str(destination / "Cargo.toml"), "--target-dir", str(root / "target"), "--profile", args.profile]
     if args.offline:
         common.append("--offline")
-    output = subprocess.check_output([str(cli), "run", "--all-days", *common], text=True)
+    output = subprocess.check_output([str(cli), "run", "--all-days", "--format", "json", *common], text=True)
     (destination / "run.stdout.log").write_text(output)
-    for line in output.splitlines():
-        if not line or re.match(r"(?:AOC \d+|Day \d+ - Part|\t(?:generator|runner|total):|Full run)", line):
-            print(line)
-    actual = {(int(day), int(part)): answer for day, part, answer in
-              re.findall(r"^Day (\d+) - Part (\d+): (\d+)$", output, flags=re.M)}
+    run_report = json.loads(output)
+    assert run_report["outcome"] == "success", run_report
+    actual = {(result["day"], result["part"]): result["answer"]
+              for result in run_report["results"]}
+    for result in run_report["results"]:
+        print(f"Day {result['day']} - Part {result['part']} [{result['variant']}]: {result['answer']}")
     assert actual == expected, f"answer mismatch:\nexpected {expected}\nactual {actual}"
 
     subprocess.run([str(cli), "bench", "--day", "4", "--part", "2", "--smoke", *common], check=True)
