@@ -198,6 +198,13 @@ mod tests {
     }
 
     #[test]
+    fn day_input_uses_the_registered_year_and_removes_the_final_newline() {
+        let raw: String = aoc_harness::input!(2);
+
+        assert_eq!(raw, "hello");
+    }
+
+    #[test]
     fn imported_result_alias_and_borrowed_parsed_values_work() {
         let registry = __aoc_registry();
         let options = aoc_harness::Options {

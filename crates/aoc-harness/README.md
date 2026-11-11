@@ -17,7 +17,7 @@ runtime and re-exports `aoc`, `aoc_generator`, `aoc_lib`, and `aoc_main` from
 
 ```toml
 [dependencies]
-aoc-harness = "0.4.0"
+aoc-harness = "0.4.1"
 ```
 
 ```rust,ignore
@@ -34,6 +34,11 @@ aoc_lib! { year = 2025 }
 
 Use `aoc_harness::aoc_main! { lib = your_library }` in a binary, or finish a
 standalone binary with `aoc_harness::aoc_main! { year = 2025 }`.
+
+In a solution module's regression test, `let raw = aoc_harness::input!(2);`
+reads day 2's local input for the declared event year. It returns a `String`
+ready to pass to `parse(&raw)`, with the same filename lookup and trailing
+newline removal as the runner. A missing or unreadable input fails the test.
 
 Select multiple days with `--day 1,3` or `--day 1 --day 3`; `-d` is the short form
 of `--day`. Select a part with `--part 1` or `-p 1`. Use `--all-days` to select

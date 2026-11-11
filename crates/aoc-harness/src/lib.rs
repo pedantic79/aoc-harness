@@ -10,7 +10,11 @@ mod run_report;
 
 use clap::{ColorChoice, Parser, ValueEnum};
 use std::{
-    collections::BTreeMap, error::Error as StdError, fmt, io::IsTerminal, path::PathBuf,
+    collections::BTreeMap,
+    error::Error as StdError,
+    fmt,
+    io::IsTerminal,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -330,7 +334,7 @@ fn selector(value: &str, prefix: &str, max: u8) -> Result<u8, String> {
 
 /// Prefer the unpadded input, falling back only when it is absent.
 /// Permission and decoding failures must never be treated as cache misses.
-pub fn input_path(manifest: &std::path::Path, year: u16, day: u8) -> std::io::Result<PathBuf> {
+pub fn input_path(manifest: &Path, year: u16, day: u8) -> std::io::Result<PathBuf> {
     let path = manifest.join(format!("input/{year}/day{day}.txt"));
     match std::fs::symlink_metadata(&path) {
         Ok(_) => Ok(path),
@@ -344,6 +348,35 @@ pub fn input_path(manifest: &std::path::Path, year: u16, day: u8) -> std::io::Re
         }
         Err(e) => Err(e),
     }
+}
+
+/// Read a day's local puzzle input as a `String` from within a solution crate.
+/// Uses the year declared by `aoc_lib!` or standalone `aoc_main!` and removes
+/// trailing newline (`\n`) characters just as the runner does.
+///
+/// ```ignore
+/// let raw = aoc_harness::input!(2);
+/// let input = generator(&raw);
+/// ```
+///
+/// # Panics
+///
+/// Panics if the input file is missing, unreadable, or contains invalid UTF-8.
+#[macro_export]
+#[allow(clippy::crate_in_macro_def)] // The registry belongs to the calling solution crate.
+macro_rules! input {
+    ($day:expr $(,)?) => {
+        crate::__aoc_registry()
+            .read_input($day)
+            .unwrap_or_else(|error| ::std::panic!("{error}"))
+    };
+}
+
+fn read_input_file(day: u8, path: &Path) -> Result<String, Error> {
+    let mut raw = std::fs::read_to_string(path)
+        .map_err(|e| Error::message(format!("day {day} input {}: {e}", path.display())))?;
+    raw.truncate(raw.trim_end_matches('\n').len());
+    Ok(raw)
 }
 
 pub struct ExecutionPlan<'a> {
@@ -472,6 +505,13 @@ impl Registry {
         Ok(candidates)
     }
 
+    /// Read the day's local input using the same filename and newline rules as the runner.
+    pub fn read_input(&self, day: u8) -> Result<String, Error> {
+        let path = input_path(Path::new(self.manifest_dir), self.year, day)
+            .map_err(|e| Error::message(format!("day {day} input path: {e}")))?;
+        read_input_file(day, &path)
+    }
+
     pub fn load_inputs(
         &self,
         selected: &[&Solution],
@@ -482,23 +522,12 @@ impl Registry {
             if inputs.contains_key(&solution.day) {
                 continue;
             }
-            let path = match &options.input {
-                Some(path) => path.clone(),
-                None => input_path(
-                    std::path::Path::new(self.manifest_dir),
-                    self.year,
-                    solution.day,
-                )
-                .map_err(|e| Error::message(format!("day {} input path: {e}", solution.day)))?,
-            };
-            let raw = std::fs::read_to_string(&path).map_err(|e| {
-                Error::message(format!(
-                    "day {} input {}: {e}",
-                    solution.day,
-                    path.display()
-                ))
-            })?;
-            inputs.insert(solution.day, raw.trim_end_matches('\n').to_owned());
+
+            let raw = match &options.input {
+                Some(path) => read_input_file(solution.day, path),
+                None => self.read_input(solution.day),
+            }?;
+            inputs.insert(solution.day, raw);
         }
         Ok(inputs)
     }

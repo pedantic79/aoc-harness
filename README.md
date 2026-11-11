@@ -45,7 +45,7 @@ macros through `aoc_harness` in your solution code.
 
 ```toml
 [dependencies]
-aoc-harness = "0.4.0"
+aoc-harness = "0.4.1"
 ```
 
 Replace `src/lib.rs` with your day modules and event year:
@@ -289,6 +289,17 @@ they appear, including comments and strings. Write ordinary Rust braces directly
 
 With `aoc_lib! { year = 2025 }`, running `cargo aoc-harness generate --day 3,4`
 creates modules with puzzle links ending in `/2025/day/3` and `/2025/day/4`.
+
+In a regression test, pass the day to `aoc_harness::input!`. For day 2,
+`generate` writes `aoc_harness::input!(2)`. When the test runs, the macro
+reads the downloaded input for the crate's event year and returns a `String`
+with trailing `\n` characters removed, just as the runner does. It looks for
+`day2.txt` first and then `day02.txt`.
+
+```rust
+let raw = aoc_harness::input!(@DAY@);
+let input = generator(&raw);
+```
 
 The CLI selects the first applicable template in this order.
 

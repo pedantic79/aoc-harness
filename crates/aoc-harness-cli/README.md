@@ -16,7 +16,7 @@ project's `Cargo.toml`:
 
 ```toml
 [dependencies]
-aoc-harness = "0.4.0"
+aoc-harness = "0.4.1"
 ```
 
 It provides the runtime and re-exports `aoc`, `aoc_generator`, `aoc_lib`, and
@@ -34,6 +34,8 @@ and its value from scripts.
 Save a UTF-8 starter module at `templates/day.rs` in your solution package.
 `cargo aoc-harness generate -d 4` picks it up automatically, replacing `@DAY@`
 with `4` and `@YEAR@` with the year from that package's `aoc_lib!`.
+Use `let raw = aoc_harness::input!(@DAY@);` in a template's regression test
+to read that day's local puzzle input as a `String`.
 
 To use a different default, set `day-template` in the solution package's
 `Cargo.toml`. Relative paths start at that manifest.
