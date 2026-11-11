@@ -63,6 +63,27 @@ pub(crate) struct ConsumerProject {
     pub workspace_root: PathBuf,
 }
 
+impl ConsumerProject {
+    pub fn day_template(&self) -> Result<Option<PathBuf>, String> {
+        if let Some(value) = self.package["metadata"]["aoc-harness"].get("day-template") {
+            let Some(path) = value.as_str().filter(|path| !path.is_empty()) else {
+                return Err(format!(
+                    "package.metadata.aoc-harness.day-template in {} must be a nonempty path string",
+                    self.manifest_path.display()
+                ));
+            };
+            return Ok(Some(self.manifest_dir.join(path)));
+        }
+
+        let path = self.manifest_dir.join("templates/day.rs");
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => Ok(Some(path)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("inspect day template {}: {e}", path.display())),
+        }
+    }
+}
+
 pub(crate) fn discover(options: &BuildOptions) -> Result<ConsumerProject, String> {
     let mut metadata = cargo();
     metadata.args(["metadata", "--format-version", "1", "--no-deps", "--locked"]);

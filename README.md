@@ -254,17 +254,69 @@ cargo aoc-harness run --day 1 --download
 
 ## Starting another day
 
-Generate a module with a parser, both solver stubs, and ignored example tests:
+The bundled template includes a parser, both solver stubs, and ignored example
+tests. Preview the changes, then create the day.
 
 ```sh
 cargo aoc-harness generate --day 2 --dry-run
 cargo aoc-harness generate --day 2
 ```
 
-Generation adds `src/day2.rs` and its module declaration in `src/lib.rs`.
-It works offline, preserves existing day modules, and can be combined with input
-acquisition using `cargo aoc-harness input --day 2 --generate`.
-Implement the generated stubs before running the new day.
+In a standard project this creates `src/day2.rs` and adds `mod day2;` before
+`aoc_lib!` in `src/lib.rs`. Generation works offline and skips existing day modules.
+
+### Custom day templates
+
+Save your starter module as a UTF-8 file at `templates/day.rs` beside your
+solution package's `Cargo.toml`. The CLI picks it up automatically, including
+when you invoke it from the workspace root. For example, this template links
+to the puzzle and starts part 1 with a line count.
+
+```rust
+//! Puzzle: https://adventofcode.com/@YEAR@/day/@DAY@
+
+use aoc_harness::aoc;
+
+#[aoc(day@DAY@, part1)]
+fn part1(input: &str) -> usize {
+    input.lines().count()
+}
+```
+
+`@DAY@` expands to the unpadded day number. `@YEAR@` expands to the event year
+declared by the selected package's `aoc_lib!`. The CLI replaces both wherever
+they appear, including comments and strings. Write ordinary Rust braces directly.
+
+With `aoc_lib! { year = 2025 }`, running `cargo aoc-harness generate --day 3,4`
+creates modules with puzzle links ending in `/2025/day/3` and `/2025/day/4`.
+
+The CLI selects the first applicable template in this order.
+
+1. `--template PATH` on the command line. Relative paths start in the directory
+   where you run the command.
+2. `day-template` under `[package.metadata.aoc-harness]` in the selected
+   package's `Cargo.toml`. Relative paths start in that package's directory.
+3. `templates/day.rs` in the selected package.
+4. The [bundled template](crates/aoc-harness-cli/templates/day.rs).
+
+For example, to use a different project-wide template, set its path in
+`Cargo.toml`.
+
+```toml
+[package.metadata.aoc-harness]
+day-template = "starters/puzzle.rs"
+```
+
+To preview a one-off override, run this command with the path to your file.
+
+```sh
+cargo aoc-harness generate --day 5 --template starters/alternate.rs --dry-run
+```
+
+For scripts that used `input --generate` or `run --generate`, call
+`cargo aoc-harness generate --day 2` as a separate step. To download input
+and execute the new day after implementing it, use
+`cargo aoc-harness run --day 2 --download`.
 
 ## Benchmarking solutions
 

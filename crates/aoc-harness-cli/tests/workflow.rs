@@ -1064,12 +1064,7 @@ fn parity_commands_and_consumer_entry_points() {
     assert!(output.contains("+++ ") && output.contains("+mod day6;"));
     assert_eq!(fs::read_to_string(&source).unwrap(), original);
     assert!(!consumer.join("src/day6.rs").exists());
-    failure(
-        run(&["input", "--day", "6", "--generate", "--offline"]),
-        "--offline prevents downloading",
-    );
-    assert_eq!(fs::read_to_string(&source).unwrap(), original);
-    assert!(!consumer.join("src/day6.rs").exists());
+
     success(run(&["generate", "--day", "6,7"]));
     let generated = snapshot(&consumer);
     success(run(&["generate", "--day", "7,6"]));
@@ -1077,14 +1072,13 @@ fn parity_commands_and_consumer_entry_points() {
     assert_eq!(snapshot(&consumer), generated);
     success(cargo(&["check", "--all-targets", "--offline"]));
     success(cargo(&["test", "--lib", "--offline"]));
-    // Run composition applies the scaffold before compiling the updated registry.
+    success(run(&["generate", "--day", "8"]));
     fs::write(consumer.join("input/2025/day8.txt"), "synthetic\n").unwrap();
     failure(
         run(&[
             "run",
             "--day",
             "8",
-            "--generate",
             "--download",
             "--offline",
             "--profile",
@@ -1122,6 +1116,88 @@ pub fn __aoc_harness_main() -> i32 {
         ]),
         "upgrade older consumers",
     );
+}
+
+#[test]
+fn generate_uses_package_template_precedence_and_expands_day_and_year() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path();
+    let package = workspace.join("winter");
+    let src = package.join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(
+        workspace.join("Cargo.toml"),
+        "[workspace]\nmembers = ['winter']\nresolver = '2'\n",
+    )
+    .unwrap();
+    let manifest = package.join("Cargo.toml");
+    let manifest_text = "[package]
+name = 'winter'
+version = '0.1.0'
+edition = '2021'
+";
+    fs::write(&manifest, manifest_text).unwrap();
+    fs::write(
+        src.join("lib.rs"),
+        "const EVENT: u16 = 2000 + 19;\r\naoc_harness::aoc_lib! { year = EVENT }\r\n",
+    )
+    .unwrap();
+    fs::create_dir_all(package.join("templates")).unwrap();
+    fs::write(
+        package.join("templates/day.rs"),
+        "// @YEAR@ day @DAY@\nconst YEAR: u16 = @YEAR@;\n",
+    )
+    .unwrap();
+    fs::write(package.join("starter.rs"), "// Config @YEAR@/@DAY@\n").unwrap();
+    fs::write(workspace.join("starter.rs"), "// Override @YEAR@/@DAY@\r\n").unwrap();
+    let cli = env!("CARGO_BIN_EXE_cargo-aoc-harness");
+    let run = |args: &[&str]| invoke(cli, workspace, args, &workspace.join("target"), workspace);
+    let before = snapshot(&src);
+
+    let preview = success(run(&["generate", "--day", "2,3", "--dry-run"]));
+
+    assert!(preview.contains("+// 2019 day 2\n+const YEAR: u16 = 2019;"));
+    assert!(preview.contains("+// 2019 day 3\n+const YEAR: u16 = 2019;"));
+    assert_eq!(snapshot(&src), before);
+
+    success(run(&["generate", "--day", "2"]));
+
+    assert_eq!(
+        fs::read_to_string(src.join("day2.rs")).unwrap(),
+        "// 2019 day 2\r\nconst YEAR: u16 = 2019;\r\n"
+    );
+
+    fs::write(
+        &manifest,
+        format!("{manifest_text}\n[package.metadata.aoc-harness]\nday-template = 'starter.rs'\n"),
+    )
+    .unwrap();
+
+    success(run(&["generate", "--day", "4"]));
+    success(run(&[
+        "--template",
+        "starter.rs",
+        "generate",
+        "--day",
+        "4,12",
+    ]));
+
+    assert_eq!(
+        fs::read_to_string(src.join("day4.rs")).unwrap(),
+        "// Config 2019/4\r\n"
+    );
+    assert_eq!(
+        fs::read_to_string(src.join("day12.rs")).unwrap(),
+        "// Override 2019/12\r\n"
+    );
+
+    let generated = snapshot(&src);
+    fs::remove_file(package.join("starter.rs")).unwrap();
+
+    let missing = run(&["generate", "--day", "5"]);
+
+    failure(missing, package.join("starter.rs").to_str().unwrap());
+    assert_eq!(snapshot(&src), generated);
 }
 
 #[test]
@@ -1167,9 +1243,17 @@ fn cli_preflight_and_session_status_work_outside_cargo() {
         call(&["credentials", "set", "secret"]),
         "unrecognized subcommand",
     );
+    for action in ["input", "run"] {
+        let output = call(&[action, "--day", "4", "--generate"]);
+
+        failure(output, "unexpected argument '--generate'");
+    }
+    failure(
+        call(&["input", "--day", "4", "--dry-run"]),
+        "unexpected argument '--dry-run'",
+    );
     for args in [
         vec!["run", "--days", "1,3"],
-        vec!["run", "--generate"],
         vec!["run", "--day", "1", "--session-file", "session"],
         vec!["run", "--day", "1", "--input", "alternate", "--download"],
         vec!["bench", "--open", "--smoke"],
@@ -1928,19 +2012,18 @@ aoc_harness::aoc_lib! { year = 2025 }
         "mod day1; aoc_harness::aoc_lib! { year = 2025 }",
     )
     .unwrap();
-    let output = run(&["run", "-d", "1", "--format", "json", "--generate"]);
+    let output = run(&["run", "-d", "1", "--format", "json"]);
     let value = report(&output);
 
     assert!(output.status.success());
     assert_eq!(value["results"][0]["answer"], "-42");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("No source changes required"));
 
-    let output = run(&["run", "-d", "2", "--format", "json", "--generate"]);
+    success(run(&["generate", "-d", "2"]));
+    let output = run(&["run", "-d", "2", "--format", "json"]);
     let value = report(&output);
 
     assert!(!output.status.success());
     assert_eq!(value["failure"]["phase"], "solver");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("Generated:"));
 }
 
 #[test]

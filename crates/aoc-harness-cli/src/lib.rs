@@ -252,7 +252,7 @@ fn execute(request: command::Request) -> Result<i32, String> {
         days,
         json,
         all,
-        generate,
+        day_template,
         dry_run,
         download,
         session_file,
@@ -275,52 +275,42 @@ fn execute(request: command::Request) -> Result<i32, String> {
         .transpose()?;
 
     let project = discover(&options)?;
-    let mut progress: Box<dyn Write> = if json {
-        Box::new(io::stderr())
-    } else {
-        Box::new(io::stdout())
-    };
-    if matches!(action, Action::Input | Action::Generate) {
-        let (year, days) = if action == Action::Input {
-            let year = source_year::resolve(&project, &options)?;
-            calendar::select(year, &days, all, chrono::Utc::now())?
-        } else {
-            (0, days)
+
+    if action == Action::Generate {
+        let template_path = match day_template {
+            Some(path) => Some(path),
+            None => project.day_template()?,
         };
-        let plan = if generate || action == Action::Generate {
-            Some(scaffold::ScaffoldPlan::prepare(
-                &project.manifest_dir,
-                &project.library_source,
-                &days,
-            )?)
-        } else {
-            None
-        };
+        let plan = scaffold::ScaffoldPlan::prepare(
+            &project.manifest_dir,
+            &project.library_source,
+            &days,
+            template_path.as_deref(),
+            || source_year::resolve(&project, &options),
+        )?;
+
         if dry_run {
-            plan.as_ref()
-                .ok_or("--dry-run requires generation")?
-                .print();
-            return Ok(0);
-        }
-        if action == Action::Input {
-            input::acquire(
-                &project.manifest_dir,
-                year,
-                &days,
-                options.offline,
-                session_file.as_deref(),
-            )?;
-        }
-        if let Some(plan) = plan {
+            plan.print();
+        } else {
             plan.apply()?;
         }
         return Ok(0);
     }
 
-    if generate {
-        scaffold::ScaffoldPlan::prepare(&project.manifest_dir, &project.library_source, &days)?
-            .apply_to(&mut progress)?;
+    if action == Action::Input {
+        let year = source_year::resolve(&project, &options)?;
+        let (year, days) = calendar::select(year, &days, all, chrono::Utc::now())?;
+
+        input::acquire(
+            &project.manifest_dir,
+            year,
+            &days,
+            options.offline,
+            session_file.as_deref(),
+        )?;
+        return Ok(0);
     }
+
     let executable = build_bridge(&options, &project)?;
     let mut profile_workloads = Vec::new();
     if download || profiling.is_some() {
@@ -344,6 +334,11 @@ fn execute(request: command::Request) -> Result<i32, String> {
             profile_workloads = profiling::workloads(&description.stdout)?;
         }
         if download {
+            let mut progress: Box<dyn Write> = if json {
+                Box::new(io::stderr())
+            } else {
+                Box::new(io::stdout())
+            };
             calendar::validate(year, &required, chrono::Utc::now())?;
             input::acquire_to(
                 &project.manifest_dir,

@@ -31,6 +31,25 @@ should stay out of Git. `input -d 1` and `input --all` use the selected package'
 unfinished solvers. The former `input --year YEAR` flag has been removed; drop it
 and its value from scripts.
 
+Save a UTF-8 starter module at `templates/day.rs` in your solution package.
+`cargo aoc-harness generate -d 4` picks it up automatically, replacing `@DAY@`
+with `4` and `@YEAR@` with the year from that package's `aoc_lib!`.
+
+To use a different default, set `day-template` in the solution package's
+`Cargo.toml`. Relative paths start at that manifest.
+
+```toml
+[package.metadata.aoc-harness]
+day-template = "starters/puzzle.rs"
+```
+
+An explicit `--template PATH` takes priority and resolves relative to the
+invocation directory. The CLI uses its bundled template when no override,
+manifest setting, or `templates/day.rs` is present. For scripts that used
+`input --generate` or `run --generate`, call `generate` as a separate step.
+See [Custom day templates](https://github.com/pedantic79/aoc-harness#custom-day-templates)
+for a complete example.
+
 Select multiple days with `--day 1,3` or `--day 1 --day 3`; `-d` is the short form
 of `--day`. Use `--all-days` to select every registered day for `run`, `list`,
 `bench`, or `profile`.

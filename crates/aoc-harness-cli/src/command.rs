@@ -35,7 +35,7 @@ pub(crate) struct Request {
     pub days: Vec<u8>,
     pub json: bool,
     pub all: bool,
-    pub generate: bool,
+    pub day_template: Option<PathBuf>,
     pub dry_run: bool,
     pub download: bool,
     pub session_file: Option<PathBuf>,
@@ -83,9 +83,7 @@ fn action_command(action: Action) -> Command {
         Action::Input => {
             "Download inputs for the project's aoc_lib! year without compiling solutions"
         }
-        Action::Generate => {
-            "Create day modules without credentials, network access, or compilation"
-        }
+        Action::Generate => "Create day modules offline without compiling solutions",
         _ => unreachable!(),
     };
     let execution = matches!(
@@ -154,16 +152,6 @@ fn action_command(action: Action) -> Command {
                     .requires("download"),
             );
     }
-    if matches!(action, Action::Run | Action::Input) {
-        let mut arg = flag(
-            "generate",
-            "Create missing day modules using the shared scaffolder",
-        );
-        if action == Action::Run {
-            arg = arg.requires("day");
-        }
-        command = command.arg(arg);
-    }
     if action == Action::Input {
         command = command
             .after_help("Examples:\n  cargo aoc-harness input --day 1\n  cargo aoc-harness input --all\n\nThe selected package's aoc_lib! declaration supplies the event year.\nWithout --day or --all, today's day is selected only during that event's release window.\nAll options may appear before or after the command.")
@@ -177,20 +165,24 @@ fn action_command(action: Action) -> Command {
             .arg(
                 value("session-file", "Override the shared session source")
                     .value_parser(clap::value_parser!(PathBuf)),
-            )
-            .arg(
-                flag(
-                    "dry-run",
-                    "Preview generated source without downloading or writing",
-                )
-                .requires("generate"),
             );
     }
     if action == Action::Generate {
-        command = command.mut_arg("day", |arg| arg.required(true)).arg(flag(
-            "dry-run",
-            "Print proposed paths and a diff without writing",
-        ));
+        command = command
+            .mut_arg("day", |arg| arg.required(true))
+            .arg(
+                value(
+                    "day-template",
+                    "Override the day template (supports @DAY@ and @YEAR@, defaults to the package's templates/day.rs when present)",
+                )
+                .long("template")
+                .value_name("PATH")
+                .value_parser(clap::value_parser!(PathBuf)),
+            )
+            .arg(flag(
+                "dry-run",
+                "Print proposed paths and a diff without writing",
+            ));
     }
     if matches!(action, Action::Bench | Action::Profile) {
         command = command
@@ -494,7 +486,7 @@ pub(crate) fn parse(mut args: Vec<OsString>) -> Result<Request, clap::Error> {
             .flatten()
             == Some(&aoc_harness::RunFormat::Json),
         all: get_flag("all"),
-        generate: get_flag("generate"),
+        day_template: get_path("day-template"),
         dry_run: get_flag("dry-run"),
         download: get_flag("download"),
         session_file,

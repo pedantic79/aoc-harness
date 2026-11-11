@@ -42,7 +42,13 @@ fn safe_source(package: &Path, path: &Path) -> Result<(), String> {
 }
 
 impl ScaffoldPlan {
-    pub fn prepare(package: &Path, root: &Path, days: &[u8]) -> Result<Self, String> {
+    pub fn prepare(
+        package: &Path,
+        root: &Path,
+        days: &[u8],
+        template_path: Option<&Path>,
+        resolve_year: impl FnOnce() -> Result<u16, String>,
+    ) -> Result<Self, String> {
         safe_source(package, root)?;
         let original =
             fs::read_to_string(root).map_err(|e| format!("read source {}: {e}", root.display()))?;
@@ -71,6 +77,19 @@ impl ScaffoldPlan {
         if days.is_empty() {
             return Err("generation requires an explicit --day selection".into());
         }
+
+        let template = match template_path {
+            Some(path) => fs::read_to_string(path)
+                .map_err(|e| format!("read day template {}: {e}", path.display()))?,
+            None => include_str!("../templates/day.rs").to_owned(),
+        };
+        let template = template.replace("\r\n", "\n").replace('\n', newline);
+        let template = if template.contains("@YEAR@") {
+            template.replace("@YEAR@", &resolve_year()?.to_string())
+        } else {
+            template
+        };
+
         for day in days {
             let mut names = vec![format!("day{day}"), format!("day{day:02}")];
             names.dedup();
@@ -128,11 +147,9 @@ impl ScaffoldPlan {
             if !modules.is_empty() || !existing.is_empty() || directory_modules {
                 return Err(format!("day {day} has ambiguous/conflicting modules or files; resolve inline, cfg/path, padded declarations, and file/declaration mismatches manually"));
             }
-            let path = paths[0].clone();
-            let contents = include_str!("../templates/day.rs").replace("@DAY@", &day.to_string());
             files.push(NewFile {
-                path,
-                contents: contents.replace('\n', newline),
+                path: paths[0].clone(),
+                contents: template.replace("@DAY@", &day.to_string()),
             });
             declarations.push_str(&format!("mod day{day};{newline}"));
         }
@@ -188,10 +205,6 @@ impl ScaffoldPlan {
     }
 
     pub fn apply(self) -> Result<(), String> {
-        self.apply_to(&mut std::io::stdout())
-    }
-
-    pub fn apply_to(self, progress: &mut dyn Write) -> Result<(), String> {
         self.apply_with(
             |temporary, root| {
                 temporary
@@ -199,7 +212,7 @@ impl ScaffoldPlan {
                     .map(|_| ())
                     .map_err(|e| e.to_string())
             },
-            progress,
+            &mut std::io::stdout(),
         )
     }
 
@@ -297,7 +310,7 @@ mod tests {
         let root = temp.path().join("custom.rs");
         let original = "//! Inner docs\r\n#![allow(dead_code)]\r\nuse aoc_harness::aoc_lib;\r\naoc_lib! { year = 2025 }\r\n";
         fs::write(&root, original).unwrap();
-        let plan = ScaffoldPlan::prepare(temp.path(), &root, &[4, 5]).unwrap();
+        let plan = ScaffoldPlan::prepare(temp.path(), &root, &[4, 5], None, || Ok(2025)).unwrap();
 
         assert_eq!(fs::read_to_string(&root).unwrap(), original);
         assert!(plan
@@ -305,16 +318,16 @@ mod tests {
             .contains("mod day4;\r\nmod day5;\r\n\r\naoc_lib!"));
         plan.apply().unwrap();
         let after = fs::read(&root).unwrap();
-        ScaffoldPlan::prepare(temp.path(), &root, &[4, 5])
+        ScaffoldPlan::prepare(temp.path(), &root, &[4, 5], None, || Ok(2025))
             .unwrap()
             .apply()
             .unwrap();
 
         assert_eq!(fs::read(&root).unwrap(), after);
         fs::write(temp.path().join("day7.rs"), "conflict").unwrap();
-        assert!(ScaffoldPlan::prepare(temp.path(), &root, &[6, 7]).is_err());
+        assert!(ScaffoldPlan::prepare(temp.path(), &root, &[6, 7], None, || Ok(2025)).is_err());
         assert!(!temp.path().join("day6.rs").exists());
-        let plan = ScaffoldPlan::prepare(temp.path(), &root, &[6]).unwrap();
+        let plan = ScaffoldPlan::prepare(temp.path(), &root, &[6], None, || Ok(2025)).unwrap();
         fs::write(&root, "// user edit").unwrap();
 
         assert!(plan.apply().is_err());
@@ -327,7 +340,7 @@ mod tests {
         let root = temp.path().join("lib.rs");
         fs::write(&root, "mod day04;\naoc_harness::aoc_lib! { year = 2025 }\n").unwrap();
         fs::write(temp.path().join("day04.rs"), "// existing").unwrap();
-        let plan = ScaffoldPlan::prepare(temp.path(), &root, &[4, 5]).unwrap();
+        let plan = ScaffoldPlan::prepare(temp.path(), &root, &[4, 5], None, || Ok(2025)).unwrap();
 
         assert_eq!(plan.files.len(), 1);
         assert!(plan
@@ -367,7 +380,7 @@ mod conflict_tests {
             let original = fs::read(&root).unwrap();
 
             assert!(
-                ScaffoldPlan::prepare(temp.path(), &root, &[3, 4]).is_err(),
+                ScaffoldPlan::prepare(temp.path(), &root, &[3, 4], None, || Ok(2025)).is_err(),
                 "{declaration}"
             );
             assert_eq!(fs::read(&root).unwrap(), original);
@@ -385,7 +398,7 @@ mod conflict_tests {
         fs::create_dir(temp.path().join("day04")).unwrap();
         fs::write(temp.path().join("day04/mod.rs"), "// existing code").unwrap();
 
-        ScaffoldPlan::prepare(temp.path(), &root, &[4])
+        ScaffoldPlan::prepare(temp.path(), &root, &[4], None, || Ok(2025))
             .unwrap()
             .apply()
             .unwrap();
@@ -405,8 +418,8 @@ mod conflict_tests {
         fs::set_permissions(&root, fs::Permissions::from_mode(0o640)).unwrap();
         symlink(&root, &linked).unwrap();
 
-        assert!(ScaffoldPlan::prepare(temp.path(), &linked, &[1]).is_err());
-        ScaffoldPlan::prepare(temp.path(), &root, &[1])
+        assert!(ScaffoldPlan::prepare(temp.path(), &linked, &[1], None, || Ok(2025)).is_err());
+        ScaffoldPlan::prepare(temp.path(), &root, &[1], None, || Ok(2025))
             .unwrap()
             .apply()
             .unwrap();
