@@ -51,19 +51,19 @@ aoc-harness = "0.4.1"
 Replace `src/lib.rs` with your day modules and event year:
 
 ```rust
-mod day1;
+mod day01;
 
 aoc_harness::aoc_lib! { year = 2025 }
 ```
 
-Create `src/day1.rs` with a generator and solver functions. The example below sums
+Create `src/day01.rs` with a generator and solver functions. The example below sums
 numbers for part 1 and finds the largest number for part 2; replace these with
 your puzzle solutions.
 
 ### Generator functions
 
 A generator parses the puzzle input into the type your solvers need. Start
-`src/day1.rs` with:
+`src/day01.rs` with:
 
 ```rust
 use aoc_harness::{aoc, aoc_generator};
@@ -87,7 +87,7 @@ not need to implement `Clone`.
 
 ### Solver functions
 
-Tag each solver with its day and part. Add these functions to `src/day1.rs`:
+Tag each solver with its day and part. Add these functions to `src/day01.rs`:
 
 ```rust
 #[aoc(day1, part1)]
@@ -262,8 +262,9 @@ cargo aoc-harness generate --day 2 --dry-run
 cargo aoc-harness generate --day 2
 ```
 
-In a standard project this creates `src/day2.rs` and adds `mod day2;` before
-`aoc_lib!` in `src/lib.rs`. Generation works offline and skips existing day modules.
+In a standard project this creates `src/day02.rs` and adds `mod day02;` before
+`aoc_lib!` in `src/lib.rs`. New module names use two-digit day numbers.
+Generation works offline and skips existing padded or unpadded day modules.
 
 ### Custom day templates
 

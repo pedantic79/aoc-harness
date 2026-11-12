@@ -91,7 +91,8 @@ impl ScaffoldPlan {
         };
 
         for day in days {
-            let mut names = vec![format!("day{day}"), format!("day{day:02}")];
+            let name = format!("day{day:02}");
+            let mut names = vec![name.clone(), format!("day{day}")];
             names.dedup();
             let modules: Vec<_> = parsed
                 .items
@@ -151,7 +152,7 @@ impl ScaffoldPlan {
                 path: paths[0].clone(),
                 contents: template.replace("@DAY@", &day.to_string()),
             });
-            declarations.push_str(&format!("mod day{day};{newline}"));
+            declarations.push_str(&format!("mod {name};{newline}"));
         }
         let mut replacement = original.clone();
         if !files.is_empty() {
@@ -315,7 +316,7 @@ mod tests {
         assert_eq!(fs::read_to_string(&root).unwrap(), original);
         assert!(plan
             .replacement
-            .contains("mod day4;\r\nmod day5;\r\n\r\naoc_lib!"));
+            .contains("mod day04;\r\nmod day05;\r\n\r\naoc_lib!"));
         plan.apply().unwrap();
         let after = fs::read(&root).unwrap();
         ScaffoldPlan::prepare(temp.path(), &root, &[4, 5], None, || Ok(2025))
@@ -326,34 +327,41 @@ mod tests {
         assert_eq!(fs::read(&root).unwrap(), after);
         fs::write(temp.path().join("day7.rs"), "conflict").unwrap();
         assert!(ScaffoldPlan::prepare(temp.path(), &root, &[6, 7], None, || Ok(2025)).is_err());
-        assert!(!temp.path().join("day6.rs").exists());
+        assert!(!temp.path().join("day06.rs").exists());
         let plan = ScaffoldPlan::prepare(temp.path(), &root, &[6], None, || Ok(2025)).unwrap();
         fs::write(&root, "// user edit").unwrap();
 
         assert!(plan.apply().is_err());
-        assert!(!temp.path().join("day6.rs").exists());
+        assert!(!temp.path().join("day06.rs").exists());
     }
 
     #[test]
-    fn root_failure_rolls_back_and_padded_modules_are_preserved() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("lib.rs");
-        fs::write(&root, "mod day04;\naoc_harness::aoc_lib! { year = 2025 }\n").unwrap();
-        fs::write(temp.path().join("day04.rs"), "// existing").unwrap();
-        let plan = ScaffoldPlan::prepare(temp.path(), &root, &[4, 5], None, || Ok(2025)).unwrap();
-
-        assert_eq!(plan.files.len(), 1);
-        assert!(plan
-            .apply_with(
-                |_, _| Err("injected write failure".into()),
-                &mut std::io::stdout()
+    fn root_failure_rolls_back_and_existing_modules_are_preserved() {
+        for name in ["day4", "day04"] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("lib.rs");
+            fs::write(
+                &root,
+                format!("mod {name};\naoc_harness::aoc_lib! {{ year = 2025 }}\n"),
             )
-            .is_err());
-        assert!(!temp.path().join("day5.rs").exists());
-        assert_eq!(
-            fs::read_to_string(temp.path().join("day04.rs")).unwrap(),
-            "// existing"
-        );
+            .unwrap();
+            let existing = temp.path().join(format!("{name}.rs"));
+            fs::write(&existing, "// existing").unwrap();
+
+            let plan =
+                ScaffoldPlan::prepare(temp.path(), &root, &[4, 5], None, || Ok(2025)).unwrap();
+
+            assert_eq!(plan.files.len(), 1);
+            assert_eq!(plan.files[0].path, temp.path().join("day05.rs"));
+            assert!(plan
+                .apply_with(
+                    |_, _| Err("injected write failure".into()),
+                    &mut std::io::stdout()
+                )
+                .is_err());
+            assert!(!temp.path().join("day05.rs").exists());
+            assert_eq!(fs::read_to_string(existing).unwrap(), "// existing");
+        }
     }
 }
 
@@ -384,7 +392,7 @@ mod conflict_tests {
                 "{declaration}"
             );
             assert_eq!(fs::read(&root).unwrap(), original);
-            assert!(!temp.path().join("day3.rs").exists());
+            assert!(!temp.path().join("day03.rs").exists());
         }
     }
 
@@ -404,6 +412,7 @@ mod conflict_tests {
             .unwrap();
 
         assert_eq!(fs::read_to_string(root).unwrap(), original);
+        assert!(!temp.path().join("day04.rs").exists());
         assert!(!temp.path().join("day4.rs").exists());
     }
 

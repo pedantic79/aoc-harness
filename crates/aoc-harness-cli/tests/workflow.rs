@@ -1061,9 +1061,10 @@ fn parity_commands_and_consumer_entry_points() {
     fs::write(&source, &original).unwrap();
     let output = success(run(&["generate", "--day", "6,7", "--dry-run"]));
 
-    assert!(output.contains("+++ ") && output.contains("+mod day6;"));
+    assert!(output.contains("src/day06.rs"));
+    assert!(output.contains("+mod day06;") && output.contains("+mod day07;"));
     assert_eq!(fs::read_to_string(&source).unwrap(), original);
-    assert!(!consumer.join("src/day6.rs").exists());
+    assert!(!consumer.join("src/day06.rs").exists());
 
     success(run(&["generate", "--day", "6,7"]));
     let generated = snapshot(&consumer);
@@ -1086,7 +1087,7 @@ fn parity_commands_and_consumer_entry_points() {
         ]),
         "day 8 part 1 is not implemented",
     );
-    assert!(consumer.join("src/day8.rs").exists());
+    assert!(consumer.join("src/day08.rs").exists());
 
     // Runtime-dependent operations diagnose an old consumer; ordinary commands still work.
     fs::write(
@@ -1156,6 +1157,9 @@ edition = '2021'
 
     let preview = success(run(&["generate", "--day", "2,3", "--dry-run"]));
 
+    assert!(preview.contains("src/day02.rs"));
+    assert!(preview.contains("src/day03.rs"));
+    assert!(preview.contains("+mod day02;") && preview.contains("+mod day03;"));
     assert!(preview.contains("+// 2019 day 2\n+const YEAR: u16 = 2019;"));
     assert!(preview.contains("+// 2019 day 3\n+const YEAR: u16 = 2019;"));
     assert_eq!(snapshot(&src), before);
@@ -1163,9 +1167,13 @@ edition = '2021'
     success(run(&["generate", "--day", "2"]));
 
     assert_eq!(
-        fs::read_to_string(src.join("day2.rs")).unwrap(),
+        fs::read_to_string(src.join("day02.rs")).unwrap(),
         "// 2019 day 2\r\nconst YEAR: u16 = 2019;\r\n"
     );
+    assert!(fs::read_to_string(src.join("lib.rs"))
+        .unwrap()
+        .contains("mod day02;\r\n"));
+    assert!(!src.join("day2.rs").exists());
 
     fs::write(
         &manifest,
@@ -1183,7 +1191,7 @@ edition = '2021'
     ]));
 
     assert_eq!(
-        fs::read_to_string(src.join("day4.rs")).unwrap(),
+        fs::read_to_string(src.join("day04.rs")).unwrap(),
         "// Config 2019/4\r\n"
     );
     assert_eq!(
