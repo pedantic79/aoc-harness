@@ -320,7 +320,9 @@ reads the downloaded input for the crate's event year and returns a `String`
 with trailing `\n` characters removed, just as the runner does. It looks for
 `day2.txt` first and then `day02.txt`, in the package's `input-dir` when one is
 set. To name the event year explicitly, use `aoc_harness::input!(2025, 2)`; the
-year must be one the crate declares.
+year must be one the crate declares. A crate that registers
+[several years](#multiple-event-years) requires the explicit form, so a template
+shared between projects can use `aoc_harness::input!(@YEAR@, @DAY@)`.
 
 ```rust
 let raw = aoc_harness::input!(@DAY@);
@@ -469,9 +471,27 @@ recording paths are preserved; choose a new path for each `--output`.
 
 ### Multiple event years
 
-One crate can hold several events, each in its own module:
+One crate can hold several events, each in its own module, with shared code
+beside them:
+
+```text
+my-solutions/
+├── Cargo.toml
+├── input/2019/day1.txt
+├── input/2025/day1.txt
+└── src/
+    ├── lib.rs
+    ├── common/mod.rs
+    ├── y2019/{mod.rs, day01.rs}
+    └── y2025/{mod.rs, day01.rs}
+```
+
+Declare each year's day modules in its `mod.rs`, such as `mod day01;` in
+`src/y2019/mod.rs`, and map the years in `src/lib.rs`:
 
 ```rust
+pub mod common;
+
 mod y2019;
 mod y2025;
 
@@ -484,9 +504,21 @@ aoc_harness::aoc_lib! {
 }
 ```
 
-Each year's `#[aoc]` and `#[aoc_generator]` registrations stay within that
-year, so two years can reuse the same day, part, and function names. Select an
-event with `--year` on `run`, `list`, `bench`, `profile`, `input`, and `generate`:
+`#[aoc]` and `#[aoc_generator]` annotations are written exactly as in a
+single-year crate. Each year's registrations stay within that year, so two years
+can reuse the same day, part, and function names, and a generator only serves
+its own year's solvers. A year's module can be `src/y2019/mod.rs` or
+`src/y2019.rs`, and may contain nested modules.
+
+The `years` keys and `default_year` are integer literals, 2015 or later, so the
+CLI can read them without compiling your solutions. Each year maps to a
+different module, and mapped modules can't be nested inside each other. Use
+either `year` or `years`, not both. With one entry in `years`, `default_year` is
+optional. Duplicate years, a `default_year` that isn't in `years`, and a
+registration outside every mapped module are compile errors.
+
+Select an event with `--year` on `run`, `list`, `bench`, `profile`, `input`, and
+`generate`:
 
 ```sh
 cargo aoc-harness run --year 2019 --day 1
@@ -500,8 +532,13 @@ Plain `list` shows every year, ordered by year, and `list --year` narrows it.
 An unregistered year is rejected before credentials, downloads, or source
 writes. `generate --year 2019` writes `day02.rs` beside the `y2019` module
 (`src/y2019/mod.rs` or `src/y2019.rs`), declares it there, and follows that
-module's padded or unpadded naming. In tests, read another year's input with
-`aoc_harness::input!(2019, 1)`.
+module's padded or unpadded naming. `@YEAR@` in a day template expands to the
+selected year.
+
+In tests, read a year's input with `aoc_harness::input!(2019, 1)`. `input!(1)`
+doesn't compile in a crate that registers several years, because it can't tell
+which year to read; templates should use `input!(@YEAR@, @DAY@)`. Naming a
+year that `years` doesn't register fails the test.
 
 Each year keeps its own benchmark reports, baselines, and profiles under a
 `<year>/` subdirectory, so `bench --year 2019 --save-baseline before` and the
@@ -511,7 +548,12 @@ Single-year crates keep their existing paths and saved baselines. An explicit
 profile `--output` path is used as given, so choose a distinct path per year.
 
 `--year` needs an `aoc-harness` runtime of 0.5.0 or later; the CLI asks you to
-upgrade an older runtime instead of passing the flag through.
+upgrade an older runtime instead of passing the flag through. Standalone
+binaries using `aoc_main! { year = ... }` support one event year; map several
+years in a library with `aoc_lib!` and run it with `aoc_main! { lib = ... }`.
+
+To combine existing `advent-of-code-YYYY` crates and a shared utilities crate
+into one, follow the [multi-year migration guide](docs/multi-year-migration.md).
 
 ### Generator overrides
 
@@ -568,6 +610,8 @@ build profile; `profile` is the profiling subcommand.
 
 - [Complete example](fixtures/library): a runnable library with synthetic inputs,
   ownership variants, and feature-dependent registrations.
+- [Multi-year migration guide](docs/multi-year-migration.md): consolidate
+  per-year crates and shared utilities into one crate.
 - [Release guide](RELEASE.md): validation and publication instructions.
 
 Licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
