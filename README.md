@@ -263,8 +263,12 @@ cargo aoc-harness generate --day 2
 ```
 
 In a standard project this creates `src/day02.rs` and adds `mod day02;` before
-`aoc_lib!` in `src/lib.rs`. New module names use two-digit day numbers.
-Generation works offline and skips existing padded or unpadded day modules.
+`aoc_lib!` in `src/lib.rs`. New module names use two-digit day numbers, except
+in projects whose library root already declares only unpadded single-digit
+modules such as `mod day4;`, which keep that style. Generation works offline.
+It skips a day whose module is declared with a matching file, such as
+`mod day04;` with `src/day04.rs`. An undeclared day file, or a declaration
+whose file name doesn't match, stops generation before anything is written.
 
 ### Custom day templates
 

@@ -41,6 +41,24 @@ fn safe_source(package: &Path, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Reports whether `ident` names a day 1–9 module, as `day04` when `padded`
+/// is set or as `day4` otherwise.
+fn is_single_digit_day(ident: &str, padded: bool) -> bool {
+    let Some(digits) = ident.strip_prefix("day") else {
+        return false;
+    };
+    let digits = if padded {
+        match digits.strip_prefix('0') {
+            Some(rest) => rest,
+            None => return false,
+        }
+    } else {
+        digits
+    };
+
+    matches!(digits.as_bytes(), [b'1'..=b'9'])
+}
+
 impl ScaffoldPlan {
     pub fn prepare(
         package: &Path,
@@ -90,9 +108,27 @@ impl ScaffoldPlan {
             template
         };
 
+        // Projects that already declare only unpadded single-digit days keep that style.
+        let declared: Vec<_> = parsed
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Mod(m) => Some(m.ident.to_string()),
+                _ => None,
+            })
+            .collect();
+        let pad = !declared.iter().any(|n| is_single_digit_day(n, false))
+            || declared.iter().any(|n| is_single_digit_day(n, true));
+
         for day in days {
-            let name = format!("day{day:02}");
-            let mut names = vec![name.clone(), format!("day{day}")];
+            let padded = format!("day{day:02}");
+            let unpadded = format!("day{day}");
+            let (name, other) = if pad {
+                (padded, unpadded)
+            } else {
+                (unpadded, padded)
+            };
+            let mut names = vec![name.clone(), other];
             names.dedup();
             let modules: Vec<_> = parsed
                 .items
@@ -146,7 +182,7 @@ impl ScaffoldPlan {
                 }
             }
             if !modules.is_empty() || !existing.is_empty() || directory_modules {
-                return Err(format!("day {day} has ambiguous/conflicting modules or files; resolve inline, cfg/path, padded declarations, and file/declaration mismatches manually"));
+                return Err(format!("day {day} has ambiguous/conflicting modules or files; resolve inline modules, cfg/path attributes, coexisting padded and unpadded declarations, and undeclared or mismatched files manually"));
             }
             files.push(NewFile {
                 path: paths[0].clone(),
@@ -337,7 +373,7 @@ mod tests {
 
     #[test]
     fn root_failure_rolls_back_and_existing_modules_are_preserved() {
-        for name in ["day4", "day04"] {
+        for (name, generated) in [("day4", "day5.rs"), ("day04", "day05.rs")] {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().join("lib.rs");
             fs::write(
@@ -352,16 +388,71 @@ mod tests {
                 ScaffoldPlan::prepare(temp.path(), &root, &[4, 5], None, || Ok(2025)).unwrap();
 
             assert_eq!(plan.files.len(), 1);
-            assert_eq!(plan.files[0].path, temp.path().join("day05.rs"));
+            assert_eq!(plan.files[0].path, temp.path().join(generated));
             assert!(plan
                 .apply_with(
                     |_, _| Err("injected write failure".into()),
                     &mut std::io::stdout()
                 )
                 .is_err());
-            assert!(!temp.path().join("day05.rs").exists());
+            assert!(!temp.path().join(generated).exists());
             assert_eq!(fs::read_to_string(existing).unwrap(), "// existing");
         }
+    }
+
+    #[test]
+    fn new_modules_follow_the_declared_naming_style() {
+        for (declarations, expected) in [
+            ("", "day05"),
+            ("mod day1;\nmod day4;\nmod day10;\n", "day5"),
+            ("mod day01;\nmod day04;\n", "day05"),
+            ("mod day1;\nmod day04;\n", "day05"),
+            ("mod day10;\nmod day11;\n", "day05"),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("lib.rs");
+            fs::write(
+                &root,
+                format!("{declarations}aoc_harness::aoc_lib! {{ year = 2025 }}\n"),
+            )
+            .unwrap();
+            for module in declarations.lines() {
+                let module = module.trim_start_matches("mod ").trim_end_matches(';');
+                fs::write(temp.path().join(format!("{module}.rs")), "").unwrap();
+            }
+
+            let plan = ScaffoldPlan::prepare(temp.path(), &root, &[5], None, || Ok(2025)).unwrap();
+
+            assert_eq!(
+                plan.files[0].path,
+                temp.path().join(format!("{expected}.rs")),
+                "{declarations:?}"
+            );
+            assert!(
+                plan.replacement.contains(&format!("mod {expected};\n")),
+                "{declarations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn two_digit_days_are_generated_once_and_then_skipped() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("lib.rs");
+        fs::write(&root, "aoc_harness::aoc_lib! { year = 2025 }\n").unwrap();
+
+        let plan = ScaffoldPlan::prepare(temp.path(), &root, &[10], None, || Ok(2025)).unwrap();
+
+        assert_eq!(plan.files.len(), 1);
+        assert_eq!(plan.files[0].path, temp.path().join("day10.rs"));
+
+        plan.apply().unwrap();
+        let after = fs::read(&root).unwrap();
+        let rerun = ScaffoldPlan::prepare(temp.path(), &root, &[10], None, || Ok(2025)).unwrap();
+
+        assert!(rerun.files.is_empty());
+        rerun.apply().unwrap();
+        assert_eq!(fs::read(&root).unwrap(), after);
     }
 }
 

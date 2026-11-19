@@ -1061,7 +1061,7 @@ fn parity_commands_and_consumer_entry_points() {
     fs::write(&source, &original).unwrap();
     let output = success(run(&["generate", "--day", "6,7", "--dry-run"]));
 
-    assert!(output.contains("src/day06.rs"));
+    assert!(output.contains(&Path::new("src").join("day06.rs").display().to_string()));
     assert!(output.contains("+mod day06;") && output.contains("+mod day07;"));
     assert_eq!(fs::read_to_string(&source).unwrap(), original);
     assert!(!consumer.join("src/day06.rs").exists());
@@ -1157,8 +1157,8 @@ edition = '2021'
 
     let preview = success(run(&["generate", "--day", "2,3", "--dry-run"]));
 
-    assert!(preview.contains("src/day02.rs"));
-    assert!(preview.contains("src/day03.rs"));
+    assert!(preview.contains(&Path::new("src").join("day02.rs").display().to_string()));
+    assert!(preview.contains(&Path::new("src").join("day03.rs").display().to_string()));
     assert!(preview.contains("+mod day02;") && preview.contains("+mod day03;"));
     assert!(preview.contains("+// 2019 day 2\n+const YEAR: u16 = 2019;"));
     assert!(preview.contains("+// 2019 day 3\n+const YEAR: u16 = 2019;"));
