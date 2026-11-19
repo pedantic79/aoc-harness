@@ -42,6 +42,10 @@ same place:
 input-dir = "../advent-of-code-input"
 ```
 
+The solution package needs `aoc-harness` 0.4.2 or later for `input-dir`; older
+runtimes keep reading `input/` even though the CLI downloads to the configured
+directory.
+
 `cargo aoc-harness generate -d 2` creates `src/day02.rs` and adds `mod day02;`
 before `aoc_lib!` in `src/lib.rs`. New module names use two-digit day numbers,
 unless the library root already declares only unpadded single-digit modules

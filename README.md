@@ -177,6 +177,8 @@ starts in the directory containing that `Cargo.toml`, not where you run the
 command, so running from a workspace root with `--package` or from elsewhere with
 `--manifest-path` finds the same files. `input`, `--download`, `run`, `bench`,
 `profile`, and `aoc_harness::input!` all read and write this directory.
+`input-dir` requires `aoc-harness` 0.4.2 or later; older runtimes ignore it and
+read `input/`, so run `cargo update -p aoc-harness` after adding it.
 
 You can supply input files yourself and use the harness offline. For the example
 above, create `input/2025/day1.txt` containing:
