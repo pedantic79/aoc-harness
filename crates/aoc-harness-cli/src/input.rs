@@ -1,4 +1,5 @@
 use crate::credentials::{self, Session};
+use aoc_harness::InputDir;
 use reqwest::{blocking::Client, header, redirect::Policy};
 use std::{
     io::{Read, Write},
@@ -157,9 +158,10 @@ fn validate_body(body: &[u8], content_type: &str) -> Result<(), DownloadError> {
     Ok(())
 }
 
-fn cached(manifest: &Path, year: u16, day: u8) -> Result<Option<std::path::PathBuf>, String> {
-    let path =
-        aoc_harness::input_path(manifest, year, day).map_err(|e| format!("input path: {e}"))?;
+fn cached(inputs: &InputDir, year: u16, day: u8) -> Result<Option<std::path::PathBuf>, String> {
+    let path = inputs
+        .find(year, day)
+        .map_err(|e| format!("input path: {e}"))?;
     match std::fs::read_to_string(&path) {
         Ok(_) => Ok(Some(path)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -172,8 +174,8 @@ fn cached(manifest: &Path, year: u16, day: u8) -> Result<Option<std::path::PathB
     }
 }
 
-fn publish(manifest: &Path, year: u16, day: u8, body: &[u8]) -> Result<bool, String> {
-    let path = manifest.join(format!("input/{year}/day{day}.txt"));
+fn publish(inputs: &InputDir, year: u16, day: u8, body: &[u8]) -> Result<bool, String> {
+    let path = inputs.file(year, day);
     let directory = path.parent().unwrap();
     std::fs::create_dir_all(directory)
         .map_err(|e| format!("create {}: {e}", directory.display()))?;
@@ -188,13 +190,13 @@ fn publish(manifest: &Path, year: u16, day: u8, body: &[u8]) -> Result<bool, Str
         .map_err(|e| format!("sync temporary input: {e}"))?;
 
     // Another process may have populated either supported spelling meanwhile.
-    if cached(manifest, year, day)?.is_some() {
+    if cached(inputs, year, day)?.is_some() {
         return Ok(false);
     }
     match temporary.persist_noclobber(&path) {
         Ok(_) => Ok(true),
         Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
-            cached(manifest, year, day)?.ok_or("concurrent input disappeared")?;
+            cached(inputs, year, day)?.ok_or("concurrent input disappeared")?;
             Ok(false)
         }
         Err(e) => Err(format!("publish {}: {}", path.display(), e.error)),
@@ -202,14 +204,14 @@ fn publish(manifest: &Path, year: u16, day: u8, body: &[u8]) -> Result<bool, Str
 }
 
 pub(crate) fn acquire(
-    manifest: &Path,
+    inputs: &InputDir,
     year: u16,
     days: &[u8],
     offline: bool,
     session_file: Option<&Path>,
 ) -> Result<(), String> {
     acquire_to(
-        manifest,
+        inputs,
         year,
         days,
         offline,
@@ -219,7 +221,7 @@ pub(crate) fn acquire(
 }
 
 pub(crate) fn acquire_to(
-    manifest: &Path,
+    inputs: &InputDir,
     year: u16,
     days: &[u8],
     offline: bool,
@@ -227,7 +229,7 @@ pub(crate) fn acquire_to(
     progress: &mut dyn Write,
 ) -> Result<(), String> {
     acquire_with_progress(
-        manifest,
+        inputs,
         year,
         days,
         offline,
@@ -239,7 +241,7 @@ pub(crate) fn acquire_to(
 
 #[cfg(test)]
 fn acquire_with(
-    manifest: &Path,
+    inputs: &InputDir,
     year: u16,
     days: &[u8],
     offline: bool,
@@ -247,7 +249,7 @@ fn acquire_with(
     transport: &mut impl Transport,
 ) -> Result<(), String> {
     acquire_with_progress(
-        manifest,
+        inputs,
         year,
         days,
         offline,
@@ -258,7 +260,7 @@ fn acquire_with(
 }
 
 fn acquire_with_progress(
-    manifest: &Path,
+    inputs: &InputDir,
     year: u16,
     days: &[u8],
     offline: bool,
@@ -271,7 +273,7 @@ fn acquire_with_progress(
     let mut errors = Vec::new();
     for &day in days {
         let result = (|| {
-            if let Some(path) = cached(manifest, year, day).map_err(|e| (e, false))? {
+            if let Some(path) = cached(inputs, year, day).map_err(|e| (e, false))? {
                 writeln!(progress, "Cached: {}", path.display())
                     .map_err(|e| (e.to_string(), true))?;
                 return Ok(false);
@@ -293,14 +295,12 @@ fn acquire_with_progress(
                 Err((message, stop)) => return Err((message, stop)),
             };
             validate_body(&body, "text/plain").map_err(|e| (e.message, e.stop))?;
-            let created = publish(manifest, year, day, &body).map_err(|e| (e, false))?;
+            let created = publish(inputs, year, day, &body).map_err(|e| (e, false))?;
             writeln!(
                 progress,
                 "{}: {}",
                 if created { "Downloaded" } else { "Cached" },
-                manifest
-                    .join(format!("input/{year}/day{day}.txt"))
-                    .display()
+                inputs.file(year, day).display()
             )
             .map_err(|e| (e.to_string(), true))?;
             Ok(created)
@@ -427,9 +427,20 @@ mod tests {
         })
     }
 
+    /// Resolve inputs for a synthetic package whose manifest has `metadata`.
+    fn package_inputs(dir: &Path, metadata: &str) -> InputDir {
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            format!("[package]\nname = 'winter'\nversion = '0.1.0'\n{metadata}"),
+        )
+        .unwrap();
+        InputDir::from_manifest_dir(dir).unwrap()
+    }
+
     #[test]
     fn cache_newlines_offline_and_concurrent_writer() {
         let temp = tempfile::tempdir().unwrap();
+        let inputs = package_inputs(temp.path(), "");
         let directory = temp.path().join("input/2025");
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(directory.join("day01.txt"), "").unwrap();
@@ -439,7 +450,7 @@ mod tests {
         };
 
         acquire_with(
-            temp.path(),
+            &inputs,
             2025,
             &[1],
             true,
@@ -447,7 +458,7 @@ mod tests {
             &mut transport,
         )
         .unwrap();
-        acquire_with(temp.path(), 2025, &[1, 2], false, session, &mut transport).unwrap();
+        acquire_with(&inputs, 2025, &[1, 2], false, session, &mut transport).unwrap();
 
         assert_eq!(transport.calls, [2]);
         assert_eq!(
@@ -455,9 +466,9 @@ mod tests {
             b"personal-looking synthetic input\r\n\n"
         );
         assert!(!directory.join("day1.txt").exists());
-        assert!(!publish(temp.path(), 2025, 2, b"losing writer").unwrap());
+        assert!(!publish(&inputs, 2025, 2, b"losing writer").unwrap());
         assert!(acquire_with(
-            temp.path(),
+            &inputs,
             2025,
             &[3],
             true,
@@ -467,7 +478,7 @@ mod tests {
         .is_err());
         std::fs::write(directory.join("day3.txt"), [255]).unwrap();
         assert!(acquire_with(
-            temp.path(),
+            &inputs,
             2025,
             &[3],
             false,
@@ -480,6 +491,7 @@ mod tests {
     #[test]
     fn failures_leave_no_file_and_stop_on_authentication_or_rate_limit() {
         let temp = tempfile::tempdir().unwrap();
+        let inputs = package_inputs(temp.path(), "");
         let mut transport = FakeTransport {
             calls: Vec::new(),
             responses: [
@@ -490,15 +502,8 @@ mod tests {
             .into(),
         };
 
-        let error = acquire_with(
-            temp.path(),
-            2025,
-            &[1, 2, 3, 4],
-            false,
-            session,
-            &mut transport,
-        )
-        .unwrap_err();
+        let error =
+            acquire_with(&inputs, 2025, &[1, 2, 3, 4], false, session, &mut transport).unwrap_err();
 
         assert_eq!(transport.calls, [1, 2, 3]);
         assert!(error.contains("404") && error.contains("429"));
@@ -524,6 +529,49 @@ mod tests {
         assert!(validate_body(&[255], "text/plain").is_err());
         assert!(validate_body(&vec![b'a'; BODY_LIMIT as usize + 1], "text/plain").is_err());
         assert!(validate_body(b"ok\n", "text/plain").is_ok());
+    }
+
+    #[test]
+    fn configured_input_dir_receives_downloads_and_names_them_in_progress() {
+        let temp = tempfile::tempdir().unwrap();
+        let package = temp.path().join("winter");
+        std::fs::create_dir_all(&package).unwrap();
+        let inputs = package_inputs(
+            &package,
+            "[package.metadata.aoc-harness]\ninput-dir = '../shared inputs'\n",
+        );
+        let shared = package.join("../shared inputs/2025");
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::write(shared.join("day01.txt"), "cached").unwrap();
+        let mut transport = FakeTransport {
+            calls: Vec::new(),
+            responses: [Ok(b"synthetic\n".to_vec())].into(),
+        };
+        let mut progress = Vec::new();
+
+        acquire_with_progress(
+            &inputs,
+            2025,
+            &[1, 2],
+            false,
+            session,
+            &mut transport,
+            &mut progress,
+        )
+        .unwrap();
+
+        let progress = String::from_utf8(progress).unwrap();
+        assert_eq!(transport.calls, [2]);
+        assert_eq!(
+            std::fs::read(shared.join("day2.txt")).unwrap(),
+            b"synthetic\n"
+        );
+        assert!(!package.join("input").exists());
+        assert!(progress.contains(&format!("Cached: {}", shared.join("day01.txt").display())));
+        assert!(progress.contains(&format!(
+            "Downloaded: {}",
+            shared.join("day2.txt").display()
+        )));
     }
 
     #[test]

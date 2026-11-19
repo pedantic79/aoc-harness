@@ -45,7 +45,7 @@ macros through `aoc_harness` in your solution code.
 
 ```toml
 [dependencies]
-aoc-harness = "0.4.1"
+aoc-harness = "0.4.2"
 ```
 
 Replace `src/lib.rs` with your day modules and event year:
@@ -163,6 +163,20 @@ that flag and its value, for example `cargo aoc-harness input --all`.
 Zero-padded input names such as `day01.txt` also work; `day1.txt` takes precedence
 when both exist. The harness removes trailing `\n` characters before parsing and
 preserves other whitespace. Relative `--input` paths use the invocation directory.
+
+To keep inputs somewhere else, such as a private repository checked out beside
+your solutions, set `input-dir` in the solution package's `Cargo.toml`:
+
+```toml
+[package.metadata.aoc-harness]
+input-dir = "../advent-of-code-input"
+```
+
+The layout under that directory stays `{year}/day{day}.txt`. A relative path
+starts in the directory containing that `Cargo.toml`, not where you run the
+command, so running from a workspace root with `--package` or from elsewhere with
+`--manifest-path` finds the same files. `input`, `--download`, `run`, `bench`,
+`profile`, and `aoc_harness::input!` all read and write this directory.
 
 You can supply input files yourself and use the harness offline. For the example
 above, create `input/2025/day1.txt` containing:
@@ -299,7 +313,8 @@ In a regression test, pass the day to `aoc_harness::input!`. For day 2,
 `generate` writes `aoc_harness::input!(2)`. When the test runs, the macro
 reads the downloaded input for the crate's event year and returns a `String`
 with trailing `\n` characters removed, just as the runner does. It looks for
-`day2.txt` first and then `day02.txt`.
+`day2.txt` first and then `day02.txt`, in the package's `input-dir` when one is
+set.
 
 ```rust
 let raw = aoc_harness::input!(@DAY@);

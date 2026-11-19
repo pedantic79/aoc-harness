@@ -16,7 +16,7 @@ project's `Cargo.toml`:
 
 ```toml
 [dependencies]
-aoc-harness = "0.4.1"
+aoc-harness = "0.4.2"
 ```
 
 It provides the runtime and re-exports `aoc`, `aoc_generator`, `aoc_lib`, and
@@ -30,6 +30,17 @@ should stay out of Git. `input -d 1` and `input --all` use the selected package'
 `aoc_lib!` year, even when downloading in a later calendar year, without compiling
 unfinished solvers. The former `input --year YEAR` flag has been removed; drop it
 and its value from scripts.
+
+Inputs are saved to `input/{year}/day{day}.txt` beside the solution package's
+`Cargo.toml`. Set `input-dir` in that manifest to keep them elsewhere, for
+example in a private repository. Relative paths start at the manifest, not the
+invocation directory, and `run`, `bench`, `profile`, and `input!` read from the
+same place:
+
+```toml
+[package.metadata.aoc-harness]
+input-dir = "../advent-of-code-input"
+```
 
 `cargo aoc-harness generate -d 2` creates `src/day02.rs` and adds `mod day02;`
 before `aoc_lib!` in `src/lib.rs`. New module names use two-digit day numbers,

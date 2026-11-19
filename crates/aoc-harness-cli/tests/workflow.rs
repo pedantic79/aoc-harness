@@ -2250,3 +2250,112 @@ fn input_resolves_the_declared_event_without_compiling_unfinished_solvers() {
         "unexpected argument '--year'",
     );
 }
+
+#[test]
+fn input_dir_override_is_shared_by_downloads_runs_benchmarks_and_tests() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let target = root.join("target");
+    fs::create_dir_all(&target).unwrap();
+    let temp = tempfile::tempdir_in(&target).unwrap();
+    let workspace = temp.path().join("workspace");
+    let package = workspace.join("winter");
+    fs::create_dir_all(package.join("src")).unwrap();
+    fs::write(
+        workspace.join("Cargo.toml"),
+        "[workspace]\nmembers = ['winter']\nresolver = '2'\n",
+    )
+    .unwrap();
+    let runtime =
+        toml::Value::String(root.join("crates/aoc-harness").to_str().unwrap().into()).to_string();
+    fs::write(
+        package.join("Cargo.toml"),
+        format!("[package]\nname = 'winter'\nversion = '0.1.0'\nedition = '2021'\n[dependencies]\naoc-harness = {{ path = {runtime} }}\n[package.metadata.aoc-harness]\ninput-dir = '../shared inputs'\n"),
+    )
+    .unwrap();
+    fs::write(
+        package.join("src/lib.rs"),
+        "#[aoc_harness::aoc(day1, part1)] fn shout(raw: &str) -> String { raw.to_uppercase() }\naoc_harness::aoc_lib! { year = 2025 }\n#[test] fn reads_configured_input() { assert_eq!(aoc_harness::input!(1), \"from shared root\"); }\n",
+    )
+    .unwrap();
+    let shared = workspace.join("shared inputs/2025");
+    fs::create_dir_all(&shared).unwrap();
+    fs::write(shared.join("day01.txt"), "from shared root\n").unwrap();
+    fs::create_dir_all(package.join("input/2025")).unwrap();
+    fs::write(package.join("input/2025/day1.txt"), "ignored default\n").unwrap();
+    fs::write(
+        workspace.join("alternate.txt"),
+        "from invocation directory\n",
+    )
+    .unwrap();
+    let cli = env!("CARGO_BIN_EXE_cargo-aoc-harness");
+    let manifest = package.join("Cargo.toml");
+    let from_workspace = |args: &[&str]| invoke(cli, &workspace, args, &target, temp.path());
+    let from_elsewhere = |args: &[&str]| invoke(cli, root, args, &target, temp.path());
+    let selected = ["--package", "winter", "--profile", "dev"];
+
+    let cached = success(from_workspace(&[
+        "input",
+        "--package",
+        "winter",
+        "-d",
+        "1",
+        "--offline",
+    ]));
+    let workspace_run = success(from_workspace(
+        &[&["run", "-d", "1"][..], &selected].concat(),
+    ));
+    let elsewhere_run = success(from_elsewhere(&[
+        "run",
+        "-d",
+        "1",
+        "--manifest-path",
+        manifest.to_str().unwrap(),
+        "--profile",
+        "dev",
+    ]));
+    let smoke = success(from_workspace(
+        &[&["bench", "-d", "1", "--smoke"][..], &selected].concat(),
+    ));
+    let alternate = success(from_workspace(
+        &[
+            &["run", "-d", "1", "--input", "alternate.txt"][..],
+            &selected,
+        ]
+        .concat(),
+    ));
+    let missing = from_workspace(&["input", "--package", "winter", "-d", "2", "--offline"]);
+    let tests = invoke(
+        "cargo",
+        &workspace,
+        &["test", "--quiet", "--package", "winter", "--lib"],
+        &target,
+        temp.path(),
+    );
+
+    assert!(
+        cached.contains(&format!(
+            "Cached: {}",
+            package.join("../shared inputs/2025/day01.txt").display()
+        )),
+        "{cached}"
+    );
+    assert!(
+        workspace_run.contains("FROM SHARED ROOT"),
+        "{workspace_run}"
+    );
+    assert!(
+        elsewhere_run.contains("FROM SHARED ROOT"),
+        "{elsewhere_run}"
+    );
+    assert!(smoke.contains("Benchmark smoke passed"), "{smoke}");
+    assert!(
+        alternate.contains("FROM INVOCATION DIRECTORY"),
+        "{alternate}"
+    );
+    failure(missing, "--offline prevents downloading");
+    success(tests);
+}

@@ -17,7 +17,7 @@ runtime and re-exports `aoc`, `aoc_generator`, `aoc_lib`, and `aoc_main` from
 
 ```toml
 [dependencies]
-aoc-harness = "0.4.1"
+aoc-harness = "0.4.2"
 ```
 
 ```rust,ignore
@@ -39,6 +39,17 @@ In a solution module's regression test, `let raw = aoc_harness::input!(2);`
 reads day 2's local input for the declared event year. It returns a `String`
 ready to pass to `parse(&raw)`, with the same filename lookup and trailing
 newline removal as the runner. A missing or unreadable input fails the test.
+
+Inputs live in `input/{year}/day{day}.txt` beside your package's `Cargo.toml`.
+To keep them elsewhere, set a directory in that manifest. Relative paths start
+in the package's directory:
+
+```toml
+[package.metadata.aoc-harness]
+input-dir = "../advent-of-code-input"
+```
+
+The runner, benchmarks, `input!`, and CLI downloads all use this directory.
 
 Select multiple days with `--day 1,3` or `--day 1 --day 3`; `-d` is the short form
 of `--day`. Select a part with `--part 1` or `-p 1`. Use `--all-days` to select

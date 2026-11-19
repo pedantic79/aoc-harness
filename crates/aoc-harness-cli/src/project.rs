@@ -64,6 +64,11 @@ pub(crate) struct ConsumerProject {
 }
 
 impl ConsumerProject {
+    /// Resolve inputs exactly as the compiled runtime does.
+    pub fn input_dir(&self) -> Result<aoc_harness::InputDir, String> {
+        aoc_harness::InputDir::from_manifest_dir(&self.manifest_dir).map_err(|e| e.to_string())
+    }
+
     pub fn day_template(&self) -> Result<Option<PathBuf>, String> {
         if let Some(value) = self.package["metadata"]["aoc-harness"].get("day-template") {
             let Some(path) = value.as_str().filter(|path| !path.is_empty()) else {
