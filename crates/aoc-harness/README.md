@@ -68,6 +68,8 @@ A crate that maps several events with `aoc_lib! { years = { 2019 => y2019,
 2025 => y2025 }, default_year = 2025 }` selects one with `--year` on `run`,
 `list`, `bench`, `profile`, `input`, and `generate`. Without it, commands use
 the only registered year or `default_year`, and plain `list` shows every year.
+Each year keeps its own Criterion reports, baselines, and profiles in a `<year>/`
+subdirectory; single-year crates keep their existing paths.
 
 `cargo aoc-harness bench` benchmarks solvers by default. Select any combination
 of `generator`, `solver`, `end-to-end`, and `full-run` with `--family`, for example

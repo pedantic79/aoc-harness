@@ -193,6 +193,29 @@ impl Events {
         }
     }
 
+    /// Benchmark or profile the selected year. Without `--report-dir`, a crate
+    /// that registers several years writes Criterion reports and baselines to
+    /// `target/criterion/<year>/`, so years never share them. A single-year
+    /// crate keeps `target/criterion/`, and an explicit directory is used as given.
+    pub fn bench(&self, options: &Options) -> Result<(), Error> {
+        let registry = self.registry(options.year)?;
+
+        registry.bench(&Options {
+            report_dir: Some(self.report_dir(registry, options)),
+            ..options.clone()
+        })
+    }
+
+    fn report_dir(&self, registry: &Registry, options: &Options) -> PathBuf {
+        match &options.report_dir {
+            Some(explicit) => explicit.clone(),
+            None if self.registries.len() == 1 => registry.default_report_dir(),
+            None => registry
+                .default_report_dir()
+                .join(registry.year.to_string()),
+        }
+    }
+
     /// Describe the plan for the selected year, along with every registered year.
     pub fn describe(&self, options: &Options) -> Result<serde_json::Value, Error> {
         let mut description = self.registry(options.year)?.describe(options)?;
@@ -1003,7 +1026,10 @@ impl Registry {
                 );
             }
             if !plan.profiling {
-                println!("Benchmark smoke passed: {count} families (no statistical reports; omit --smoke to measure)");
+                println!(
+                    "Benchmark smoke passed for {}: {count} families (no statistical reports; omit --smoke to measure)",
+                    self.year
+                );
             }
             return Ok(());
         }
@@ -1030,7 +1056,7 @@ impl Registry {
         let report = options
             .report_dir
             .clone()
-            .unwrap_or_else(|| PathBuf::from(self.manifest_dir).join("target/criterion"));
+            .unwrap_or_else(|| self.default_report_dir());
         if let Some(name) = &options.baseline {
             baselines::require(&report, name, &labels)?;
         }
@@ -1078,9 +1104,14 @@ impl Registry {
         });
         if !plan.profiling {
             criterion.final_summary();
-            println!("Benchmark reports: {}", report.display());
+            println!("Benchmark reports for {}: {}", self.year, report.display());
         }
         Ok(())
+    }
+
+    /// The Criterion directory used without `--report-dir`.
+    fn default_report_dir(&self) -> PathBuf {
+        PathBuf::from(self.manifest_dir).join("target/criterion")
     }
 
     fn scope(&self, options: &Options) -> String {
@@ -1160,7 +1191,7 @@ pub fn entry(events: Events) -> i32 {
     let result = result.and_then(|()| match options.action {
         Action::List => events.list(&options),
         Action::Run => events.registry(options.year)?.run(&options),
-        Action::Bench | Action::Profile => events.registry(options.year)?.bench(&options),
+        Action::Bench | Action::Profile => events.bench(&options),
     });
     let result = result.and_then(|()| {
         if matches!(options.action, Action::Profile) && !options.smoke {
@@ -1575,6 +1606,34 @@ mod events_tests {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("years-v1")));
+    }
+
+    #[test]
+    fn criterion_reports_are_scoped_by_year_only_in_multi_year_crates() {
+        let multi = events(Some(2025));
+        let single = Events {
+            default_year: Some(2025),
+            registries: &REGISTRIES[..1],
+        };
+        let report_dir = |events: &Events, args: &[&str]| {
+            let options = options(args);
+            let registry = events.registry(options.year).unwrap();
+
+            events.report_dir(registry, &options)
+        };
+
+        let older = report_dir(&multi, &["bench", "--year", "2019"]);
+        let newer = report_dir(&multi, &["bench"]);
+        let unscoped = report_dir(&single, &["bench"]);
+        let explicit = report_dir(
+            &multi,
+            &["bench", "--year", "2019", "--report-dir", "/given"],
+        );
+
+        assert_eq!(older, Path::new("/no/such/consumer/target/criterion/2019"));
+        assert_eq!(newer, Path::new("/no/such/consumer/target/criterion/2025"));
+        assert_eq!(unscoped, Path::new("/no/such/consumer/target/criterion"));
+        assert_eq!(explicit, Path::new("/given"));
     }
 
     #[test]
