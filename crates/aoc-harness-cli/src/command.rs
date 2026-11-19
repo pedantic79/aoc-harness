@@ -32,6 +32,7 @@ pub(crate) struct Request {
     pub build: BuildOptions,
     pub action: Action,
     pub runtime: Vec<OsString>,
+    pub year: Option<u16>,
     pub days: Vec<u8>,
     pub json: bool,
     pub all: bool,
@@ -80,9 +81,7 @@ fn action_command(action: Action) -> Command {
             "Benchmark the latest registered day, including variants; defaults to solvers"
         }
         Action::Profile => "Profile workloads from the latest registered day by default",
-        Action::Input => {
-            "Download inputs for the project's aoc_lib! year without compiling solutions"
-        }
+        Action::Input => "Download inputs for an aoc_lib! event year without compiling solutions",
         Action::Generate => "Create day modules offline without compiling solutions",
         _ => unreachable!(),
     };
@@ -96,6 +95,12 @@ fn action_command(action: Action) -> Command {
         .mut_arg("color", |arg| arg.hide(action != Action::Bench))
         .after_help(format!("Examples:\n  cargo aoc-harness {name} --day 4\n  cargo aoc-harness {name} --day 1,3\n\nAll options may appear before or after the command."))
         .next_help_heading("Selection options")
+        .arg(value("year", if action == Action::List {
+                "Registered event year; defaults to the only or default_year, and list shows every year"
+            } else {
+                "Registered event year; defaults to the only year or aoc_lib!'s default_year"
+            })
+            .value_parser(aoc_harness::parse_year))
         .arg(value("day", "Days 1-25, numeric or dayN, comma-separated or repeated")
             .short('d').value_delimiter(',').action(ArgAction::Append)
             .value_parser(aoc_harness::parse_day));
@@ -154,11 +159,11 @@ fn action_command(action: Action) -> Command {
     }
     if action == Action::Input {
         command = command
-            .after_help("Examples:\n  cargo aoc-harness input --day 1\n  cargo aoc-harness input --all\n\nThe selected package's aoc_lib! declaration supplies the event year.\nWithout --day or --all, today's day is selected only during that event's release window.\nAll options may appear before or after the command.")
+            .after_help("Examples:\n  cargo aoc-harness input --day 1\n  cargo aoc-harness input --all\n  cargo aoc-harness input --year 2019 --all\n\nThe selected package's aoc_lib! declaration supplies the event year: --year selects one\nof its registered years, defaulting to the only year or default_year.\nWithout --day or --all, today's day is selected only during that event's release window.\nAll options may appear before or after the command.")
             .arg(
                 flag(
                     "all",
-                    "Download all released days of the project's declared event",
+                    "Download all released days of the selected event",
                 )
                 .conflicts_with("day"),
             )
@@ -379,7 +384,13 @@ pub(crate) fn parse(mut args: Vec<OsString>) -> Result<Request, clap::Error> {
     if let Some(("status", status)) = matches.subcommand() {
         session_file = status.get_one::<PathBuf>("session-file").cloned();
     }
+    let year = matches.try_get_one::<u16>("year").ok().flatten().copied();
     let mut runtime: Vec<OsString> = vec![action.name().into()];
+    // Forward only when given, so runtimes predating years-v1 keep working.
+    if let Some(year) = year {
+        runtime.push("--year".into());
+        runtime.push(year.to_string().into());
+    }
     if !days.is_empty() {
         runtime.push("--day".into());
         runtime.push(
@@ -479,6 +490,7 @@ pub(crate) fn parse(mut args: Vec<OsString>) -> Result<Request, clap::Error> {
         build,
         action,
         runtime,
+        year,
         days,
         json: matches
             .try_get_one::<aoc_harness::RunFormat>("format")
@@ -570,6 +582,53 @@ mod tests {
 
             assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
         }
+    }
+
+    #[test]
+    fn year_selects_a_registered_event_for_every_project_command() {
+        let parse_args = |args: &[&str]| parse(args.iter().map(OsString::from).collect());
+
+        for action in ["run", "list", "bench", "profile", "input", "generate"] {
+            for args in [
+                vec![action, "--year", "2019", "--day", "1"],
+                vec!["--year", "2019", action, "--day", "1"],
+                vec![action, "--year=2019", "--day", "1"],
+            ] {
+                let request = parse_args(&args).unwrap();
+
+                assert_eq!(request.year, Some(2019), "{args:?}");
+                assert_eq!(
+                    request.runtime[..3],
+                    [action, "--year", "2019"].map(OsString::from),
+                    "{args:?}"
+                );
+            }
+
+            let request = parse_args(&[action, "--day", "1"]).unwrap();
+
+            assert_eq!(request.year, None);
+            assert!(!request.runtime.iter().any(|arg| arg == "--year"));
+            for year in ["2014", "twenty", ""] {
+                let error = parse_args(&[action, "--day", "1", "--year", year])
+                    .err()
+                    .unwrap();
+
+                assert_eq!(
+                    error.kind(),
+                    clap::error::ErrorKind::ValueValidation,
+                    "{action} {year}"
+                );
+            }
+        }
+
+        let implicit = parse_args(&["--year", "2019"]).unwrap();
+        let credentials = parse_args(&["credentials", "status", "--year", "2019"]);
+
+        assert_eq!(
+            implicit.runtime,
+            ["run", "--year", "2019"].map(OsString::from)
+        );
+        assert!(credentials.is_err());
     }
 
     #[test]
@@ -723,7 +782,7 @@ mod report_and_baseline_tests {
     }
 
     #[test]
-    fn report_options_apply_only_to_runs_and_removed_year_is_unknown() {
+    fn report_options_apply_only_to_runs() {
         let request = parse(["--format", "json", "run"].map(OsString::from).to_vec()).unwrap();
 
         assert!(request.json);
@@ -734,7 +793,6 @@ mod report_and_baseline_tests {
         for args in [
             vec!["bench", "--format", "json"],
             vec!["list", "--format", "json"],
-            vec!["input", "--year", "2025"],
             vec!["run", "--baseline", "before"],
             vec!["profile", "--save-baseline", "before"],
         ] {

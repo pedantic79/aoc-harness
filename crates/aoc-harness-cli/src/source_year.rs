@@ -2,7 +2,7 @@ use crate::{project::ConsumerProject, BuildOptions};
 use proc_macro2::{TokenStream, TokenTree};
 use quote::{quote, ToTokens};
 use std::{collections::BTreeSet, path::Path, process::Command};
-use syn::{punctuated::Punctuated, Item, Meta, Token};
+use syn::{Item, Meta, Token};
 
 fn identifiers(tokens: TokenStream, names: &mut BTreeSet<String>) {
     for token in tokens {
@@ -126,19 +126,97 @@ fn support(
     Ok(output)
 }
 
-pub(crate) fn resolve(project: &ConsumerProject, options: &BuildOptions) -> Result<u16, String> {
-    resolve_inner(project, options).map_err(|error| {
-        format!(
-            "cannot determine the aoc_lib! event year for package {:?} in {}: {error}",
-            project.package_name,
-            project.library_source.display()
-        )
-    })
+/// Registered years and their module segments below the crate root.
+type Years = Vec<(u16, Vec<String>)>;
+
+/// The event years an `aoc_lib!` declaration registers, read from its source.
+enum Declared {
+    /// `year = EXPR`, which maps one year to the crate root.
+    Single(Box<syn::Expr>),
+    /// `years = { YEAR => module, ... }`.
+    Multi { years: Years, default: Option<u16> },
 }
 
-fn resolve_inner(project: &ConsumerProject, options: &BuildOptions) -> Result<u16, String> {
-    let source = std::fs::read_to_string(&project.library_source).map_err(|e| e.to_string())?;
-    let parsed = syn::parse_file(&source).map_err(|e| e.to_string())?;
+/// The arguments of `aoc_lib!` that select years. The macro validates the
+/// rest of the declaration when the crate compiles.
+struct Arguments {
+    year: Option<syn::Expr>,
+    years: Option<Vec<(syn::Expr, syn::Path)>>,
+    default_year: Option<syn::Expr>,
+}
+
+impl syn::parse::Parse for Arguments {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+        let mut arguments = Self {
+            year: None,
+            years: None,
+            default_year: None,
+        };
+        while !input.is_empty() {
+            let key: syn::Ident = input.parse()?;
+            input.parse::<Token![=]>()?;
+            let duplicate =
+                || syn::Error::new_spanned(&key, format!("{key} is given more than once"));
+
+            match key.to_string().as_str() {
+                "years" => {
+                    let content;
+                    syn::braced!(content in input);
+                    let mut pairs = Vec::new();
+                    while !content.is_empty() {
+                        let year: syn::Expr = content.parse()?;
+                        content.parse::<Token![=>]>()?;
+                        pairs.push((year, content.call(syn::Path::parse_mod_style)?));
+                        if !content.is_empty() {
+                            content.parse::<Token![,]>()?;
+                        }
+                    }
+                    if arguments.years.replace(pairs).is_some() {
+                        return Err(duplicate());
+                    }
+                }
+                "year" => {
+                    if arguments.year.replace(input.parse()?).is_some() {
+                        return Err(duplicate());
+                    }
+                }
+                "default_year" => {
+                    if arguments.default_year.replace(input.parse()?).is_some() {
+                        return Err(duplicate());
+                    }
+                }
+                _ => {
+                    input.parse::<syn::Expr>()?;
+                }
+            }
+
+            if !input.is_empty() {
+                input.parse::<Token![,]>()?;
+            }
+        }
+        Ok(arguments)
+    }
+}
+
+fn literal_year(expr: &syn::Expr, role: &str) -> Result<u16, String> {
+    if let syn::Expr::Lit(syn::ExprLit {
+        lit: syn::Lit::Int(int),
+        ..
+    }) = expr
+    {
+        if let Ok(year) = int.base10_parse::<u16>() {
+            if year >= 2015 {
+                return Ok(year);
+            }
+        }
+    }
+    Err(format!(
+        "{role} must be an integer literal event year, 2015 or later"
+    ))
+}
+
+fn declared(source: &str) -> Result<(syn::File, Declared), String> {
+    let parsed = syn::parse_file(source).map_err(|e| e.to_string())?;
     let entries: Vec<_> = parsed
         .items
         .iter()
@@ -159,21 +237,151 @@ fn resolve_inner(project: &ConsumerProject, options: &BuildOptions) -> Result<u1
         return Err("expected exactly one direct aoc_lib! declaration".into());
     }
 
-    let args = entries[0]
-        .mac
-        .parse_body_with(Punctuated::<Meta, Token![,]>::parse_terminated)
-        .map_err(|e| e.to_string())?;
-    let years: Vec<_> = args
+    let arguments: Arguments = entries[0].mac.parse_body().map_err(|e| e.to_string())?;
+    let declared = match (arguments.year, arguments.years) {
+        (Some(year), None) => Declared::Single(Box::new(year)),
+        (None, Some(pairs)) => {
+            let mut years = Vec::new();
+            for (year, path) in &pairs {
+                let year = literal_year(year, "each years key")?;
+                let mut module: Vec<_> =
+                    path.segments.iter().map(|s| s.ident.to_string()).collect();
+                if module.first().is_some_and(|s| s == "crate") {
+                    module.remove(0);
+                }
+                years.push((year, module));
+            }
+            let default = arguments
+                .default_year
+                .map(|year| literal_year(&year, "default_year"))
+                .transpose()?;
+            Declared::Multi { years, default }
+        }
+        (Some(_), Some(_)) => {
+            return Err("use either year = ... or years = { ... }, not both".into())
+        }
+        (None, None) => {
+            return Err("expected year = EXPRESSION or years = { YEAR => module, ... }".into())
+        }
+    };
+    Ok((parsed, declared))
+}
+
+fn unregistered(year: u16, registered: impl IntoIterator<Item = u16>) -> String {
+    let mut registered: Vec<_> = registered.into_iter().collect();
+    registered.sort_unstable();
+    let registered: Vec<_> = registered.iter().map(u16::to_string).collect();
+
+    format!(
+        "event year {year} is not registered; registered years: {}",
+        registered.join(", ")
+    )
+}
+
+/// Choose the requested year, the default year, or the only year.
+fn choose(
+    years: &[(u16, Vec<String>)],
+    default: Option<u16>,
+    requested: Option<u16>,
+) -> Result<(u16, Vec<String>), String> {
+    let registered = || years.iter().map(|(year, _)| *year);
+    let only = (years.len() == 1).then(|| years[0].0);
+
+    let Some(year) = requested.or(default).or(only) else {
+        let mut available: Vec<_> = registered().collect();
+        available.sort_unstable();
+        let available: Vec<_> = available.iter().map(u16::to_string).collect();
+        return Err(format!(
+            "several event years are registered ({}) and aoc_lib! sets no default_year; select one with --year",
+            available.join(", ")
+        ));
+    };
+    years
         .iter()
-        .filter_map(|arg| match arg {
-            Meta::NameValue(v) if v.path.is_ident("year") => Some(&v.value),
-            _ => None,
-        })
-        .collect();
-    if years.len() != 1 {
-        return Err("expected year = EXPRESSION".into());
+        .find(|(registered, _)| *registered == year)
+        .cloned()
+        .ok_or_else(|| unregistered(year, registered()))
+}
+
+/// The selected event and the module, below the crate root, that holds its
+/// solutions. The year is `None` when it comes from an unevaluated
+/// `year = EXPR`, so callers that never need it skip compiling a probe.
+pub(crate) struct Selection {
+    pub year: Option<u16>,
+    pub module: Vec<String>,
+}
+
+/// Select an event from the library source without compiling solvers.
+///
+/// `year = EXPR` is evaluated only when `--year` must be checked against it.
+pub(crate) fn select(
+    project: &ConsumerProject,
+    options: &BuildOptions,
+    requested: Option<u16>,
+) -> Result<Selection, String> {
+    select_with(project, options, requested, false)
+}
+
+/// Resolve the selected event year, evaluating `year = EXPR` when needed.
+pub(crate) fn resolve(
+    project: &ConsumerProject,
+    options: &BuildOptions,
+    requested: Option<u16>,
+) -> Result<u16, String> {
+    let selection = select_with(project, options, requested, true)?;
+
+    Ok(selection.year.expect("evaluated selections have a year"))
+}
+
+fn select_with(
+    project: &ConsumerProject,
+    options: &BuildOptions,
+    requested: Option<u16>,
+    evaluate_single: bool,
+) -> Result<Selection, String> {
+    let undetermined = |error: String| {
+        format!(
+            "cannot determine the aoc_lib! event year for package {:?} in {}: {error}",
+            project.package_name,
+            project.library_source.display()
+        )
+    };
+
+    let source = std::fs::read_to_string(&project.library_source)
+        .map_err(|e| undetermined(e.to_string()))?;
+    let (parsed, declared) = declared(&source).map_err(undetermined)?;
+
+    match declared {
+        Declared::Single(_) if requested.is_none() && !evaluate_single => Ok(Selection {
+            year: None,
+            module: Vec::new(),
+        }),
+        Declared::Single(expression) => {
+            let year = evaluate(project, options, &parsed, &expression).map_err(undetermined)?;
+            if let Some(requested) = requested.filter(|requested| *requested != year) {
+                return Err(unregistered(requested, [year]));
+            }
+            Ok(Selection {
+                year: Some(year),
+                module: Vec::new(),
+            })
+        }
+        Declared::Multi { years, default } => {
+            let (year, module) = choose(&years, default, requested)?;
+            Ok(Selection {
+                year: Some(year),
+                module,
+            })
+        }
     }
-    let year = years[0];
+}
+
+fn evaluate(
+    project: &ConsumerProject,
+    options: &BuildOptions,
+    parsed: &syn::File,
+    year: &syn::Expr,
+) -> Result<u16, String> {
     if let syn::Expr::Lit(lit) = year {
         if let syn::Lit::Int(number) = &lit.lit {
             return number.base10_parse().map_err(|e| e.to_string());
@@ -280,4 +488,87 @@ fn resolve_inner(project: &ConsumerProject, options: &BuildOptions) -> Result<u1
         .trim()
         .parse::<u16>()
         .map_err(|e| format!("year expression did not return a u16: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn years(source: &str) -> Result<(Years, Option<u16>), String> {
+        match declared(source)?.1 {
+            Declared::Multi { years, default } => Ok((years, default)),
+            Declared::Single(_) => Err("single".into()),
+        }
+    }
+
+    #[test]
+    fn years_mappings_are_read_without_compiling() {
+        let source = "mod y2019;\nmod nested;\naoc_harness::aoc_lib! {\n    years = { 2025 => crate::y2025, 2019 => nested::y2019, },\n    default_year = 2025,\n}\n";
+
+        let (years, default) = years(source).unwrap();
+        let single =
+            declared("const EVENT_YEAR: u16 = 2025; aoc_harness::aoc_lib! { year = EVENT_YEAR }")
+                .unwrap();
+
+        assert_eq!(
+            years,
+            [
+                (2025, vec!["y2025".to_owned()]),
+                (2019, vec!["nested".to_owned(), "y2019".to_owned()]),
+            ]
+        );
+        assert_eq!(default, Some(2025));
+        assert!(matches!(single.1, Declared::Single(_)));
+    }
+
+    #[test]
+    fn invalid_year_declarations_are_reported() {
+        for (source, expected) in [
+            ("aoc_lib! { years = { YEAR => y2025 } }", "each years key"),
+            ("aoc_lib! { years = { 2014 => y2014 } }", "each years key"),
+            (
+                "aoc_lib! { years = { 2025 => y2025 }, default_year = DEFAULT }",
+                "default_year",
+            ),
+            (
+                "aoc_lib! { year = 2025, years = { 2025 => y2025 } }",
+                "not both",
+            ),
+            ("aoc_lib! { year = 2025, year = 2024 }", "more than once"),
+            ("aoc_lib! { default_year = 2025 }", "expected year"),
+            ("pub fn unrelated() {}", "exactly one direct aoc_lib!"),
+        ] {
+            let error = declared(source).err().unwrap();
+
+            assert!(error.contains(expected), "{source}: {error}");
+        }
+    }
+
+    #[test]
+    fn selection_prefers_requested_then_default_then_only_year() {
+        let mapped = |year: u16| (year, vec![format!("y{year}")]);
+        let both = [mapped(2019), mapped(2025)];
+        let only = [mapped(2019)];
+
+        let requested = choose(&both, Some(2025), Some(2019)).unwrap();
+        let default = choose(&both, Some(2025), None).unwrap();
+        let sole = choose(&only, None, None).unwrap();
+        let ambiguous = choose(&both, None, None).unwrap_err();
+        let unknown = choose(&both, Some(2025), Some(2018)).unwrap_err();
+        let unknown_single = choose(&only, None, Some(2025)).unwrap_err();
+
+        assert_eq!(requested, mapped(2019));
+        assert_eq!(default, mapped(2025));
+        assert_eq!(sole, mapped(2019));
+        assert!(ambiguous.contains("several event years are registered (2019, 2025)"));
+        assert!(ambiguous.contains("--year"));
+        assert_eq!(
+            unknown,
+            "event year 2018 is not registered; registered years: 2019, 2025"
+        );
+        assert_eq!(
+            unknown_single,
+            "event year 2025 is not registered; registered years: 2019"
+        );
+    }
 }

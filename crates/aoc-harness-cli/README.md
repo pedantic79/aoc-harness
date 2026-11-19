@@ -28,8 +28,13 @@ with `input` or `--download`. They share the user-managed
 `$HOME/.adventofcode.session` raw token file with aoc-cli. Personal input files
 should stay out of Git. `input -d 1` and `input --all` use the selected package's
 `aoc_lib!` year, even when downloading in a later calendar year, without compiling
-unfinished solvers. The former `input --year YEAR` flag has been removed; drop it
-and its value from scripts.
+unfinished solvers.
+
+A crate that registers several events with `aoc_lib! { years = { ... } }` selects
+one with `--year` on `run`, `list`, `bench`, `profile`, `input`, and `generate`.
+Without it, commands use the only registered year or `default_year`, and plain
+`list` shows every year. `--year` must name a registered year, including in
+single-year crates, and requires an `aoc-harness` 0.5.0 or later runtime.
 
 Inputs are saved to `input/{year}/day{day}.txt` beside the solution package's
 `Cargo.toml`. Set `input-dir` in that manifest to keep them elsewhere, for
@@ -43,7 +48,9 @@ input-dir = "../advent-of-code-input"
 ```
 
 `cargo aoc-harness generate -d 2` creates `src/day02.rs` and adds `mod day02;`
-before `aoc_lib!` in `src/lib.rs`. New module names use two-digit day numbers,
+before `aoc_lib!` in `src/lib.rs`. In a multi-year crate, `generate --year 2019`
+writes the day beside the year's module (`src/y2019/mod.rs` or `src/y2019.rs`)
+and declares it there. New module names use two-digit day numbers,
 unless the library root already declares only unpadded single-digit modules
 such as `mod day4;`. Days whose declaration and file already match are skipped;
 an undeclared day file or a mismatched declaration stops generation before
@@ -51,7 +58,7 @@ anything is written. Add `--dry-run` to preview the changes.
 
 Save a UTF-8 starter module at `templates/day.rs` in your solution package.
 `cargo aoc-harness generate -d 4` picks it up automatically, replacing `@DAY@`
-with `4` and `@YEAR@` with the year from that package's `aoc_lib!`.
+with `4` and `@YEAR@` with the selected year from that package's `aoc_lib!`.
 Use `let raw = aoc_harness::input!(@DAY@);` in a template's regression test
 to read that day's local puzzle input as a `String`.
 

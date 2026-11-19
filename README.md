@@ -161,8 +161,9 @@ and library source before credentials or downloads are attempted. `--all` uses
 that event's released days; omitting `--day` selects today's day only during that
 event's December release window. Keep personal inputs out of Git.
 
-The former `input --year YEAR` flag has been removed. Migrate scripts by dropping
-that flag and its value, for example `cargo aoc-harness input --all`.
+`--year YEAR` selects one of the years that `aoc_lib!` registers; it never
+relabels another year's inputs. In a single-year crate it must match the declared
+year. See [Multiple event years](#multiple-event-years).
 
 Zero-padded input names such as `day01.txt` also work; `day1.txt` takes precedence
 when both exist. The harness removes trailing `\n` characters before parsing and
@@ -207,7 +208,7 @@ cargo aoc-harness list
 
 `cargo aoc-harness run` runs the latest registered day by default.
 `cargo aoc-harness` is a shortcut for `run`, with the same flags and selection
-rules.
+rules. Human-readable and JSON reports name the event year.
 
 `run` and `bench` build in release mode by default; `list` shows every registered
 day and marks default implementations. As you add days, use `--day 1,3` or repeat
@@ -306,8 +307,8 @@ fn part1(input: &str) -> usize {
 }
 ```
 
-`@DAY@` expands to the unpadded day number. `@YEAR@` expands to the event year
-declared by the selected package's `aoc_lib!`. The CLI replaces both wherever
+`@DAY@` expands to the unpadded day number. `@YEAR@` expands to the selected
+event year from the package's `aoc_lib!`. The CLI replaces both wherever
 they appear, including comments and strings. Write ordinary Rust braces directly.
 
 With `aoc_lib! { year = 2025 }`, running `cargo aoc-harness generate --day 3,4`
@@ -462,6 +463,45 @@ Profiling does not save benchmark baselines or statistical reports. Existing
 recording paths are preserved; choose a new path for each `--output`.
 
 ## Advanced usage
+
+### Multiple event years
+
+One crate can hold several events, each in its own module:
+
+```rust
+mod y2019;
+mod y2025;
+
+aoc_harness::aoc_lib! {
+    years = {
+        2019 => y2019,
+        2025 => y2025,
+    },
+    default_year = 2025,
+}
+```
+
+Each year's `#[aoc]` and `#[aoc_generator]` registrations stay within that
+year, so two years can reuse the same day, part, and function names. Select an
+event with `--year` on `run`, `list`, `bench`, `profile`, `input`, and `generate`:
+
+```sh
+cargo aoc-harness run --year 2019 --day 1
+cargo aoc-harness input --year 2019 --all
+cargo aoc-harness generate --year 2019 --day 2
+```
+
+Without `--year`, commands use the only registered year or `default_year`; with
+several years and no default, they list the registered years and ask for one.
+Plain `list` shows every year, ordered by year, and `list --year` narrows it.
+An unregistered year is rejected before credentials, downloads, or source
+writes. `generate --year 2019` writes `day02.rs` beside the `y2019` module
+(`src/y2019/mod.rs` or `src/y2019.rs`), declares it there, and follows that
+module's padded or unpadded naming. In tests, read another year's input with
+`aoc_harness::input!(2019, 1)`.
+
+`--year` needs an `aoc-harness` runtime of 0.5.0 or later; the CLI asks you to
+upgrade an older runtime instead of passing the flag through.
 
 ### Generator overrides
 

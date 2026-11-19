@@ -180,8 +180,14 @@ fn command_help_works_without_a_consumer_or_cargo() {
         assert!(output.contains("--baseline <NAME>"));
 
         let input_help = help(&["input", "--help"]);
-        assert!(!input_help.contains("--year"));
-        assert!(input_help.contains("project's declared event"));
+        assert!(input_help.contains("--year <year>"));
+        assert!(input_help.contains("selected event"));
+        for action in ["run", "list", "bench", "profile", "generate"] {
+            assert!(
+                help(&[action, "--help"]).contains("--year <year>"),
+                "{action}"
+            );
+        }
         let run_help = help(&["run", "--help"]);
         assert!(run_help.contains("fail if displayed answers disagree"));
         assert!(run_help.contains("--format"));
@@ -1265,7 +1271,8 @@ fn cli_preflight_and_session_status_work_outside_cargo() {
         vec!["run", "--day", "1", "--session-file", "session"],
         vec!["run", "--day", "1", "--input", "alternate", "--download"],
         vec!["bench", "--open", "--smoke"],
-        vec!["input", "--year", "2025"],
+        vec!["input", "--year", "2014"],
+        vec!["run", "--year", "twenty"],
         vec!["input", "--year", "2025", "--all", "--day", "1"],
         vec!["generate", "--day", "26"],
         vec!["profile", "--duration", "0"],
@@ -2245,10 +2252,219 @@ fn input_resolves_the_declared_event_without_compiling_unfinished_solvers() {
         assert!(!diagnostic.contains("read session"));
         assert!(output.stdout.is_empty());
     }
+    fs::write(
+        &source,
+        "mod unfinished; aoc_harness::aoc_lib! { year = 2025 }",
+    )
+    .unwrap();
+    let before = snapshot(&consumer);
+
+    let matching = success(run(&["input", "--year", "2025", "-d", "1", "--offline"]));
+    let other = run(&[
+        "input",
+        "--year",
+        "2024",
+        "-d",
+        "1",
+        "--session-file",
+        "missing-session",
+    ]);
+
+    assert!(matching.contains("input/2025/day1.txt"), "{matching}");
+    assert!(!String::from_utf8_lossy(&other.stderr).contains("read session"));
     failure(
-        run(&["input", "--year", "2025", "-d", "1"]),
-        "unexpected argument '--year'",
+        other,
+        "event year 2024 is not registered; registered years: 2025",
     );
+    assert_eq!(snapshot(&consumer), before);
+}
+
+#[test]
+fn year_selection_runs_lists_downloads_and_generates_one_event() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let target = root.join("target");
+    fs::create_dir_all(&target).unwrap();
+    let temp = tempfile::tempdir_in(&target).unwrap();
+    let consumer = temp.path().join("consumer");
+    copy_fixture(
+        &root.join("fixtures/years"),
+        &consumer,
+        &root.join("crates/aoc-harness"),
+    );
+    let cli = env!("CARGO_BIN_EXE_cargo-aoc-harness");
+    let run = |args: &[&str]| {
+        let args = [args, &["--profile", "dev"]].concat();
+        invoke(cli, &consumer, &args, &target, temp.path())
+    };
+    let offline = |args: &[&str]| invoke(cli, &consumer, args, &target, temp.path());
+
+    let default = success(run(&["-d", "1"]));
+    let older = success(run(&["run", "--year", "2019", "-d", "1"]));
+    let report = success(run(&[
+        "run", "--year", "2019", "-d", "1", "--format", "json",
+    ]));
+    let listed = success(run(&["list"]));
+    let narrowed = success(run(&["list", "--year", "2019"]));
+    let smoke = success(run(&["bench", "--year", "2019", "-d", "1", "--smoke"]));
+    let unknown = run(&[
+        "run",
+        "--year",
+        "2018",
+        "-d",
+        "1",
+        "--download",
+        "--session-file",
+        "missing-session",
+    ]);
+
+    assert!(default.contains("AOC 2025"), "{default}");
+    assert!(default.contains("Day 1 - Part 1: 2"), "{default}");
+    assert!(older.contains("AOC 2019"), "{older}");
+    assert!(older.contains("Day 1 - Part 1: 658"), "{older}");
+    let report: serde_json::Value = serde_json::from_str(&report).unwrap();
+    assert_eq!(report["year"], 2019);
+    assert_eq!(report["results"][0]["answer"], "658");
+    let first = listed.find("2019 day 1 part 1 [default]").unwrap();
+    let second = listed.find("2025 day 2 part 1 [default]").unwrap();
+    assert!(first < second, "{listed}");
+    assert!(narrowed.contains("2019 day 1 part 1"), "{narrowed}");
+    assert!(!narrowed.contains("2025"), "{narrowed}");
+    assert!(smoke.contains("Benchmark smoke passed"), "{smoke}");
+    assert!(!String::from_utf8_lossy(&unknown.stderr).contains("read session"));
+    failure(
+        unknown,
+        "event year 2018 is not registered; registered years: 2019, 2025",
+    );
+
+    // Input and generation read the mapping from source while solvers are broken.
+    let solver = consumer.join("src/y2019/day01.rs");
+    let mut broken = fs::read_to_string(&solver).unwrap();
+    broken.push_str("\nfn broken() -> usize { unknown_value }\n");
+    fs::write(&solver, broken).unwrap();
+    let before = snapshot(&consumer);
+
+    let older = success(offline(&[
+        "input",
+        "--year",
+        "2019",
+        "-d",
+        "1",
+        "--offline",
+    ]));
+    let newer = success(offline(&["input", "-d", "1", "--offline"]));
+    let all = offline(&["input", "--year", "2019", "--all", "--offline"]);
+    let unknown = offline(&[
+        "input",
+        "--year",
+        "2018",
+        "-d",
+        "1",
+        "--session-file",
+        "missing-session",
+    ]);
+    let dry_run = success(offline(&[
+        "generate",
+        "--year",
+        "2019",
+        "-d",
+        "2",
+        "--dry-run",
+    ]));
+
+    assert!(older.contains("input/2019/day1.txt"), "{older}");
+    assert!(newer.contains("input/2025/day1.txt"), "{newer}");
+    failure(all, "Inputs: 1 cached, 0 downloaded, 24 failed");
+    assert!(!String::from_utf8_lossy(&unknown.stderr).contains("read session"));
+    failure(
+        unknown,
+        "event year 2018 is not registered; registered years: 2019, 2025",
+    );
+    assert!(dry_run.contains("y2019/day02.rs"), "{dry_run}");
+    assert_eq!(snapshot(&consumer), before);
+
+    let template = temp.path().join("template.rs");
+    fs::write(&template, "// @YEAR@ day @DAY@\n").unwrap();
+
+    success(offline(&[
+        "generate",
+        "--year",
+        "2019",
+        "-d",
+        "2",
+        "--template",
+        template.to_str().unwrap(),
+    ]));
+    success(offline(&["generate", "-d", "4"]));
+    failure(
+        offline(&["generate", "--year", "2018", "-d", "2"]),
+        "event year 2018 is not registered",
+    );
+
+    assert_eq!(
+        fs::read_to_string(consumer.join("src/y2019/day02.rs")).unwrap(),
+        "// 2019 day 2\n"
+    );
+    assert!(fs::read_to_string(consumer.join("src/y2019/mod.rs"))
+        .unwrap()
+        .contains("mod day01;\nmod day02;\n"));
+    assert!(consumer.join("src/y2025/day04.rs").is_file());
+    assert!(fs::read_to_string(consumer.join("src/y2025/mod.rs"))
+        .unwrap()
+        .contains("mod day04;"));
+    assert!(!consumer.join("src/day02.rs").exists());
+    assert!(!fs::read_to_string(consumer.join("src/lib.rs"))
+        .unwrap()
+        .contains("mod day"));
+}
+
+#[test]
+fn year_selection_reports_runtimes_without_years_support() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let target = root.join("target");
+    fs::create_dir_all(&target).unwrap();
+    let temp = tempfile::tempdir_in(&target).unwrap();
+    let consumer = temp.path().join("legacy");
+    fs::create_dir_all(consumer.join("src")).unwrap();
+    fs::write(
+        consumer.join("Cargo.toml"),
+        "[package]\nname = 'legacy'\nversion = '0.1.0'\nedition = '2021'\n[workspace]\n",
+    )
+    .unwrap();
+    // Mimics a runtime whose argument parser predates --year and --capabilities.
+    fs::write(
+        consumer.join("src/lib.rs"),
+        r#"pub fn __aoc_harness_main() -> i32 {
+    match std::env::args().skip(1).find(|a| a.starts_with("--year") || a == "--capabilities") {
+        Some(arg) => { eprintln!("error: unexpected argument '{arg}' found"); 2 }
+        None => { println!("legacy runtime ran"); 0 }
+    }
+}
+"#,
+    )
+    .unwrap();
+    let cli = env!("CARGO_BIN_EXE_cargo-aoc-harness");
+    let run = |args: &[&str]| {
+        let args = [args, &["--profile", "dev"]].concat();
+        invoke(cli, &consumer, &args, &target, temp.path())
+    };
+
+    let unchanged = success(run(&["run", "-d", "1"]));
+
+    assert!(unchanged.contains("legacy runtime ran"), "{unchanged}");
+    for action in ["run", "list", "bench"] {
+        failure(
+            run(&[action, "--year", "2025"]),
+            "upgrade the consumer's aoc-harness runtime",
+        );
+    }
 }
 
 #[test]

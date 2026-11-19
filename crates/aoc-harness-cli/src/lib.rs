@@ -243,12 +243,52 @@ fn run_benchmarks(command: &mut Command) -> Result<i32, String> {
     Ok(status.code().unwrap_or(1))
 }
 
+/// Check that the compiled runtime supports `--year` and registers `year`,
+/// before any input download, profiling, or execution.
+fn require_year(executable: &std::path::Path, year: u16) -> Result<(), String> {
+    let upgrade = || {
+        "--year requires an aoc-harness runtime with years-v1 support; upgrade the consumer's aoc-harness runtime".to_owned()
+    };
+
+    let output = Command::new(executable)
+        .args(["__describe", "--protocol", "1", "--capabilities"])
+        .output()
+        .map_err(|e| format!("describe compiled runtime: {e}"))?;
+    if !output.status.success() {
+        return Err(upgrade());
+    }
+    let description: serde_json::Value =
+        serde_json::from_slice(&output.stdout).map_err(|_| upgrade())?;
+    if !description["capabilities"]
+        .as_array()
+        .is_some_and(|c| c.iter().any(|v| v == "years-v1"))
+    {
+        return Err(upgrade());
+    }
+
+    let years: Vec<u64> = description["years"]
+        .as_array()
+        .ok_or_else(upgrade)?
+        .iter()
+        .map(|v| v.as_u64().ok_or_else(upgrade))
+        .collect::<Result<_, _>>()?;
+    if years.contains(&u64::from(year)) {
+        return Ok(());
+    }
+    let years: Vec<_> = years.iter().map(u64::to_string).collect();
+    Err(format!(
+        "event year {year} is not registered; registered years: {}",
+        years.join(", ")
+    ))
+}
+
 fn execute(request: command::Request) -> Result<i32, String> {
     use command::Action;
     let command::Request {
         build: options,
         action,
         runtime,
+        year,
         days,
         json,
         all,
@@ -281,12 +321,17 @@ fn execute(request: command::Request) -> Result<i32, String> {
             Some(path) => Some(path),
             None => project.day_template()?,
         };
+        let selection = source_year::select(&project, &options, year)?;
         let plan = scaffold::ScaffoldPlan::prepare(
             &project.manifest_dir,
             &project.library_source,
+            &selection.module,
             &days,
             template_path.as_deref(),
-            || source_year::resolve(&project, &options),
+            || match selection.year {
+                Some(year) => Ok(year),
+                None => source_year::resolve(&project, &options, None),
+            },
         )?;
 
         if dry_run {
@@ -298,7 +343,7 @@ fn execute(request: command::Request) -> Result<i32, String> {
     }
 
     if action == Action::Input {
-        let year = source_year::resolve(&project, &options)?;
+        let year = source_year::resolve(&project, &options, year)?;
         let (year, days) = calendar::select(year, &days, all, chrono::Utc::now())?;
         let inputs = project.input_dir()?;
 
@@ -313,6 +358,9 @@ fn execute(request: command::Request) -> Result<i32, String> {
     }
 
     let executable = build_bridge(&options, &project)?;
+    if let Some(year) = year {
+        require_year(&executable, year)?;
+    }
     let mut profile_workloads = Vec::new();
     if download || profiling.is_some() {
         let description = Command::new(&executable)

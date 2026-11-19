@@ -31,3 +31,22 @@ Scripts can migrate by dropping the flag and its value. For example, in a 2025
 solution project, `cargo aoc-harness input --year 2025 --all` becomes
 `cargo aoc-harness input --all`. Removing a documented flag is a breaking CLI
 change.
+
+## Reintroduce `--year` to select a registered event
+
+Superseded in part by multi-year crates (#1, #4). `aoc_lib!` can register
+several events with `years = { YEAR => module, ... }`, so `input` again accepts
+`--year`, with select-only semantics:
+
+- `--year` names one of the years the declaration registers. It never overrides
+  or relabels the declared year, which was the reason for the removal above.
+- An unregistered year is an error, including in single-year crates, where
+  `--year` must equal the evaluated `year = EXPR`. The error is reported before
+  credentials are looked up, inputs are requested, or files are written.
+- Without `--year`, `input` uses the only registered year or `default_year`; with
+  several years and no default, it lists the registered years and asks for one.
+  The clock never selects the year.
+- `--all` downloads that event's released days only.
+- The CLI reads `years` and `default_year` by parsing the library source, so
+  input acquisition still works while solvers do not compile. `year = EXPR` keeps
+  the existing probe, compiled only when the year must be known.
