@@ -409,11 +409,14 @@ impl InputDir {
     }
 }
 
-/// Locate a day's input for the package in `manifest`, honoring its
-/// `input-dir` setting. Shorthand for [`InputDir::from_manifest_dir`]
-/// followed by [`InputDir::find`].
+/// Locate a day's input under the default `input/` directory beside
+/// `manifest`, without reading `Cargo.toml`. Use [`InputDir`] to honor the
+/// package's `input-dir` setting.
 pub fn input_path(manifest: &Path, year: u16, day: u8) -> std::io::Result<PathBuf> {
-    InputDir::from_manifest_dir(manifest)?.find(year, day)
+    InputDir {
+        root: manifest.join("input"),
+    }
+    .find(year, day)
 }
 
 /// Read a day's local puzzle input as a `String` from within a solution crate.
@@ -573,7 +576,8 @@ impl Registry {
 
     /// Read the day's local input using the same filename and newline rules as the runner.
     pub fn read_input(&self, day: u8) -> Result<String, Error> {
-        let path = input_path(Path::new(self.manifest_dir), self.year, day)
+        let path = InputDir::from_manifest_dir(Path::new(self.manifest_dir))
+            .and_then(|inputs| inputs.find(self.year, day))
             .map_err(|e| Error::message(format!("day {day} input path: {e}")))?;
         read_input_file(day, &path)
     }
@@ -1335,12 +1339,22 @@ mod input_dir_tests {
         let padded = inputs.find(2025, 1).unwrap();
         let unpadded = inputs.find(2025, 2).unwrap();
         let absent = inputs.find(2025, 3).unwrap();
-        let shorthand = input_path(dir.path(), 2025, 1).unwrap();
 
         assert_eq!(padded, year.join("day01.txt"));
         assert_eq!(unpadded, year.join("day2.txt"));
         assert_eq!(absent, year.join("day3.txt"));
-        assert_eq!(shorthand, padded);
+    }
+
+    #[test]
+    fn input_path_keeps_the_default_layout_without_a_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let year = dir.path().join("input/2025");
+        std::fs::create_dir_all(&year).unwrap();
+        std::fs::write(year.join("day01.txt"), "padded").unwrap();
+
+        let path = input_path(dir.path(), 2025, 1).unwrap();
+
+        assert_eq!(path, year.join("day01.txt"));
     }
 
     #[test]
