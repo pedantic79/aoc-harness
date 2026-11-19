@@ -10,6 +10,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo test --manifest-path fixtures/library/Cargo.toml --lib
 cargo test --manifest-path fixtures/parity/Cargo.toml
+cargo test --manifest-path fixtures/years/Cargo.toml --lib --all-features
 python3 scripts/validate_packages.py
 ```
 

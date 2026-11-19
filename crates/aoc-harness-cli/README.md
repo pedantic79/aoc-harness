@@ -16,7 +16,7 @@ project's `Cargo.toml`:
 
 ```toml
 [dependencies]
-aoc-harness = "0.4.2"
+aoc-harness = "0.5.0"
 ```
 
 It provides the runtime and re-exports `aoc`, `aoc_generator`, `aoc_lib`, and

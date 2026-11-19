@@ -17,7 +17,7 @@ macros:
 
 ```toml
 [dependencies]
-aoc-harness = "0.4.2"
+aoc-harness = "0.5.0"
 ```
 
 Import the macros through `aoc_harness` in your solution code:
@@ -28,6 +28,8 @@ use aoc_harness::{aoc, aoc_generator, aoc_lib, aoc_main};
 
 Registration discovery scans direct attributes in the selected library or binary
 module tree. Generated adapters preserve borrowed lifetimes and ownership modes.
+The `year` given to `aoc_lib!` or `aoc_main!` must be a constant `u16`
+expression; registrations are scoped to their event year at compile time.
 
 See the [repository documentation](https://github.com/pedantic79/aoc-harness).
 Licensed under MIT OR Apache-2.0.

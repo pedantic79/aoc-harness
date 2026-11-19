@@ -45,7 +45,7 @@ macros through `aoc_harness` in your solution code.
 
 ```toml
 [dependencies]
-aoc-harness = "0.4.2"
+aoc-harness = "0.5.0"
 ```
 
 Replace `src/lib.rs` with your day modules and event year:
@@ -55,6 +55,10 @@ mod day01;
 
 aoc_harness::aoc_lib! { year = 2025 }
 ```
+
+`year` takes a constant `u16` expression, such as `2025` or a `const EVENT_YEAR`.
+An expression that can only be evaluated at run time, such as a call to a
+non-`const` function, is a compile error.
 
 Create `src/day01.rs` with a generator and solver functions. The example below sums
 numbers for part 1 and finds the largest number for part 2; replace these with
@@ -314,7 +318,8 @@ In a regression test, pass the day to `aoc_harness::input!`. For day 2,
 reads the downloaded input for the crate's event year and returns a `String`
 with trailing `\n` characters removed, just as the runner does. It looks for
 `day2.txt` first and then `day02.txt`, in the package's `input-dir` when one is
-set.
+set. To name the event year explicitly, use `aoc_harness::input!(2025, 2)`; the
+year must be one the crate declares.
 
 ```rust
 let raw = aoc_harness::input!(@DAY@);

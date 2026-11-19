@@ -108,11 +108,114 @@ pub struct Generator {
     pub check: fn(&str) -> Result<(), Error>,
 }
 
+/// The registrations of one event year.
 pub struct Registry {
     pub year: u16,
     pub manifest_dir: &'static str,
     pub solutions: &'static [Solution],
     pub generators: &'static [Generator],
+}
+
+/// Every event year registered by one `aoc_lib!` or standalone `aoc_main!`.
+pub struct Events {
+    /// The year used when none is requested: the only registered year, or
+    /// `default_year`.
+    pub default_year: Option<u16>,
+    /// One registry per year, in declaration order.
+    pub registries: &'static [Registry],
+}
+
+impl Events {
+    /// The registered years in ascending order.
+    pub fn years(&self) -> Vec<u16> {
+        let mut years: Vec<_> = self.registries.iter().map(|r| r.year).collect();
+        years.sort_unstable();
+        years
+    }
+
+    /// Select a registered year, or the default year when `year` is `None`.
+    pub fn registry(&self, year: Option<u16>) -> Result<&'static Registry, Error> {
+        let registries = self.registries;
+        let available = || {
+            let years: Vec<_> = self.years().iter().map(u16::to_string).collect();
+            years.join(", ")
+        };
+
+        let Some(year) = year.or(self.default_year) else {
+            return Err(Error::message(format!(
+                "several event years are registered ({}) and aoc_lib! sets no default_year",
+                available()
+            )));
+        };
+        registries
+            .iter()
+            .find(|registry| registry.year == year)
+            .ok_or_else(|| {
+                Error::message(format!(
+                    "event year {year} is not registered; registered years: {}",
+                    available()
+                ))
+            })
+    }
+
+    /// Read a registered year's local input using the runner's file and newline rules.
+    pub fn read_input(&self, year: u16, day: u8) -> Result<String, Error> {
+        self.registry(Some(year))?.read_input(day)
+    }
+}
+
+/// Chooses the generator for one solution in one event year. `aoc_lib!`
+/// implements it for each solution's year-specific input marker.
+#[doc(hidden)]
+#[diagnostic::on_unimplemented(
+    message = "no generator is selected for this solution in its event year",
+    note = "check that the solution's module is mapped by aoc_lib! and that its cfg conditions match"
+)]
+pub trait Select {
+    /// A type with an associated `parse(&str) -> Result<_, Error>` function.
+    type Generator;
+    /// Whether `Generator` is a registered `#[aoc_generator]`, as opposed to raw input.
+    const HAS: bool;
+}
+
+/// Passes raw input to solvers taking `&str` when no generator is registered.
+#[doc(hidden)]
+pub struct RawStr;
+
+impl RawStr {
+    pub fn parse(raw: &str) -> Result<&str, Error> {
+        Ok(raw)
+    }
+}
+
+/// Passes raw input to solvers taking `&[u8]` when no generator is registered.
+#[doc(hidden)]
+pub struct RawBytes;
+
+impl RawBytes {
+    pub fn parse(raw: &str) -> Result<&[u8], Error> {
+        Ok(raw.as_bytes())
+    }
+}
+
+/// Whether `path` names `module` or one of its descendants. Used by the
+/// `__aoc_year_of` function that `aoc_lib!` generates.
+#[doc(hidden)]
+pub const fn within_module(path: &str, module: &str) -> bool {
+    let (path, module) = (path.as_bytes(), module.as_bytes());
+    if path.len() < module.len() {
+        return false;
+    }
+
+    let mut i = 0;
+    while i < module.len() {
+        if path[i] != module[i] {
+            return false;
+        }
+        i += 1;
+    }
+    path.len() == module.len()
+        || (path.len() > module.len() + 1 && path[i] == b':' && path[i + 1] == b':')
 }
 
 const fn equal(a: &str, b: &str) -> bool {
@@ -417,25 +520,38 @@ pub fn input_path(manifest: &Path, year: u16, day: u8) -> std::io::Result<PathBu
 }
 
 /// Read a day's local puzzle input as a `String` from within a solution crate.
-/// Uses the year declared by `aoc_lib!` or standalone `aoc_main!` and removes
-/// trailing newline (`\n`) characters just as the runner does.
+/// Removes trailing newline (`\n`) characters just as the runner does.
+///
+/// `input!(day)` uses the year declared by `aoc_lib!` or standalone
+/// `aoc_main!`. In a crate that registers several years, it is a compile
+/// error; name the year with `input!(year, day)`, which works in every crate.
 ///
 /// ```ignore
 /// let raw = aoc_harness::input!(2);
-/// let input = generator(&raw);
+/// let older = aoc_harness::input!(2019, 2);
 /// ```
 ///
 /// # Panics
 ///
-/// Panics if the input file is missing, unreadable, or contains invalid UTF-8.
+/// Panics if the year is not registered, or if the input file is missing,
+/// unreadable, or contains invalid UTF-8.
 #[macro_export]
 #[allow(clippy::crate_in_macro_def)] // The registry belongs to the calling solution crate.
 macro_rules! input {
-    ($day:expr $(,)?) => {
+    ($year:expr, $day:expr $(,)?) => {
+        crate::__aoc_events()
+            .read_input($year, $day)
+            .unwrap_or_else(|error| ::std::panic!("{error}"))
+    };
+    ($day:expr $(,)?) => {{
+        const _: () = ::core::assert!(
+            crate::__AOC_SINGLE_YEAR,
+            "input!(day) needs a year in a crate that registers several years; use input!(year, day)"
+        );
         crate::__aoc_registry()
             .read_input($day)
             .unwrap_or_else(|error| ::std::panic!("{error}"))
-    };
+    }};
 }
 
 fn read_input_file(day: u8, path: &Path) -> Result<String, Error> {
@@ -916,7 +1032,15 @@ impl Registry {
     }
 }
 
-pub fn entry(registry: Registry) -> i32 {
+pub fn entry(events: Events) -> i32 {
+    let registry = match events.registry(None) {
+        Ok(registry) => registry,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return 1;
+        }
+    };
+
     let mut args: Vec<_> = std::env::args_os().collect();
     if args.get(1).is_some_and(|arg| arg == "__describe") {
         if args.get(2).is_none_or(|arg| arg != "--protocol")
@@ -992,6 +1116,21 @@ pub fn entry(registry: Registry) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modules_contain_themselves_and_descendants_but_not_siblings() {
+        let cases = [
+            ("winter::y2019", true),
+            ("winter::y2019::day01", true),
+            ("winter::y2019x", false),
+            ("winter::y2019:", false),
+            ("winter", false),
+        ];
+
+        for (path, expected) in cases {
+            assert_eq!(within_module(path, "winter::y2019"), expected, "{path}");
+        }
+    }
 
     #[test]
     fn p_selects_parts_for_runtime_entry_points() {

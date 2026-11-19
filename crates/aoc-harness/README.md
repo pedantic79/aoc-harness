@@ -17,7 +17,7 @@ runtime and re-exports `aoc`, `aoc_generator`, `aoc_lib`, and `aoc_main` from
 
 ```toml
 [dependencies]
-aoc-harness = "0.4.2"
+aoc-harness = "0.5.0"
 ```
 
 ```rust,ignore
@@ -33,12 +33,14 @@ aoc_lib! { year = 2025 }
 ```
 
 Use `aoc_harness::aoc_main! { lib = your_library }` in a binary, or finish a
-standalone binary with `aoc_harness::aoc_main! { year = 2025 }`.
+standalone binary with `aoc_harness::aoc_main! { year = 2025 }`. `year` takes a
+constant `u16` expression, such as `2025` or a `const EVENT_YEAR`.
 
 In a solution module's regression test, `let raw = aoc_harness::input!(2);`
 reads day 2's local input for the declared event year. It returns a `String`
 ready to pass to `parse(&raw)`, with the same filename lookup and trailing
-newline removal as the runner. A missing or unreadable input fails the test.
+newline removal as the runner. `input!(2025, 2)` names the year explicitly; it
+must be a year the crate declares. A missing or unreadable input fails the test.
 
 Inputs live in `input/{year}/day{day}.txt` beside your package's `Cargo.toml`.
 To keep them elsewhere, set a directory in that manifest. Relative paths start
