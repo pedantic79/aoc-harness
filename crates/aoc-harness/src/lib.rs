@@ -167,14 +167,48 @@ impl Events {
     /// when `--year` is omitted. Years without a matching solution are
     /// skipped; the listing fails only when no year matches.
     pub fn list(&self, options: &Options) -> Result<(), Error> {
+        for line in self.listing(options)? {
+            println!("{line}");
+        }
+        Ok(())
+    }
+
+    fn listing(&self, options: &Options) -> Result<Vec<String>, Error> {
         if options.year.is_some() || self.registries.len() == 1 {
-            return self.registry(options.year)?.list(options);
+            return self.registry(options.year)?.listing(options);
         }
 
+        let has_day = |registry: &Registry, day: u8| {
+            registry.solutions.iter().any(|s| {
+                s.day == day
+                    && options.part.is_none_or(|p| s.part == p)
+                    && options.solution.as_ref().is_none_or(|n| s.name == n)
+            })
+        };
+        if options
+            .day
+            .iter()
+            .any(|day| !self.registries.iter().any(|r| has_day(r, *day)))
+        {
+            return Err(Error::message(
+                "no solutions match the requested day, part, and variant",
+            ));
+        }
+
+        let requested_days = !options.day.is_empty();
         let mut listings = Vec::new();
         let mut failure = None;
         for year in self.years() {
-            match self.registry(Some(year))?.listing(options) {
+            let registry = self.registry(Some(year))?;
+            // Ask each year only for its own requested days, so a day that
+            // only another year registers does not hide this year's matches.
+            let mut options = options.clone();
+            options.day.retain(|day| has_day(registry, *day));
+            if requested_days && options.day.is_empty() {
+                continue;
+            }
+
+            match registry.listing(&options) {
                 Ok(lines) => listings.extend(lines),
                 Err(error) => {
                     failure.get_or_insert(error);
@@ -184,12 +218,7 @@ impl Events {
 
         match failure {
             Some(error) if listings.is_empty() => Err(error),
-            _ => {
-                for line in listings {
-                    println!("{line}");
-                }
-                Ok(())
-            }
+            _ => Ok(listings),
         }
     }
 
@@ -1595,12 +1624,26 @@ mod events_tests {
             .list(&options(&["list", "--year", "2019"]))
             .unwrap();
         assert!(ambiguous.list(&options(&["list", "--day", "3"])).is_err());
+        assert!(ambiguous.list(&options(&["list", "--day", "1,3"])).is_err());
         assert!(ambiguous
             .list(&options(&["list", "--year", "2019", "--day", "2"]))
             .is_err());
         assert!(ambiguous
             .list(&options(&["list", "--year", "2018"]))
             .is_err());
+    }
+
+    #[test]
+    fn listing_without_a_year_keeps_days_another_year_lacks() {
+        let ambiguous = events(None);
+
+        let listing = ambiguous
+            .listing(&options(&["list", "--day", "1,2"]))
+            .unwrap();
+
+        assert_eq!(listing.len(), 3);
+        assert!(listing[0].starts_with("2019 day 1 "));
+        assert!(listing[2].starts_with("2025 day 2 "));
     }
 }
 
