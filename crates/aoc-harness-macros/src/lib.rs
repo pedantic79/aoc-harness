@@ -141,6 +141,19 @@ impl Registration {
     }
 }
 
+/// The event year of the module expanding a registration. Attribute macros
+/// cannot see the `aoc_lib!` mapping, so the crate root's `__aoc_year_of`
+/// resolves it during const evaluation.
+///
+/// rust-analyzer expands `module_path!()` to a fixed placeholder. Crates with a
+/// single `year` still resolve because the crate root's mapping matches that
+/// placeholder; in crates with several `years`, rust-analyzer cannot resolve the
+/// year-specific adapters and reports spurious errors at registrations. rustc
+/// is unaffected.
+fn year_of_module() -> Tokens {
+    quote!({ crate::__aoc_year_of(::core::module_path!()) })
+}
+
 fn argument(function: &ItemFn) -> syn::Result<&Type> {
     if function.sig.asyncness.is_some()
         || function.sig.unsafety.is_some()
@@ -307,6 +320,7 @@ pub fn aoc_generator(args: TokenStream, item: TokenStream) -> TokenStream {
         };
         let call = checked(quote!(#name(#input)), fallible, &reg, "generator");
         let label = format!("generator/{}", reg.label());
+        let year = year_of_module();
 
         Ok(quote! {
             #function
@@ -314,7 +328,7 @@ pub fn aoc_generator(args: TokenStream, item: TokenStream) -> TokenStream {
             #[doc(hidden)]
             #(#conditions)*
             #[allow(private_interfaces)]
-            impl crate::#adapter {
+            impl crate::#adapter<#year> {
                 pub(crate) #signature { ::std::result::Result::Ok(#call) }
 
                 #[doc(hidden)]
@@ -350,7 +364,8 @@ pub fn aoc(args: TokenStream, item: TokenStream) -> TokenStream {
         let name = &function.sig.ident;
         let adapter = reg.adapter(false, name);
         let alias = reg.alias(name);
-        let has_generator = format_ident!("{}_generated", alias);
+        let year = year_of_module();
+        let selected = quote!(<crate::#alias<#year> as crate::__aoc_runtime::Select>);
         let argument = invocation(arg, &reg, false, &function.sig.generics)?;
         let call = quote!(#name(::std::hint::black_box(#argument)));
         let solve = checked(call, fallible, &reg, "solver");
@@ -360,7 +375,7 @@ pub fn aoc(args: TokenStream, item: TokenStream) -> TokenStream {
         let label = reg.label();
         let solver_label = format!("solver/{label}");
         let end_label = format!("end-to-end/{label}");
-        let prepare = quote!(crate::#alias::parse(::std::hint::black_box(raw)));
+        let prepare = quote!(<#selected::Generator>::parse(::std::hint::black_box(raw)));
         let prepare_bench = quote!(#prepare.unwrap_or_else(|e| panic!("{e}")));
         let solve_bench = quote!((|| -> ::std::result::Result<_, crate::__aoc_runtime::Error> { ::std::result::Result::Ok(#solve) })().unwrap_or_else(|e| panic!("{e}")));
 
@@ -393,12 +408,12 @@ pub fn aoc(args: TokenStream, item: TokenStream) -> TokenStream {
 
             #[doc(hidden)]
             #(#conditions)*
-            impl crate::#adapter {
+            impl crate::#adapter<#year> {
                 #[allow(unused_mut)]
                 pub(crate) fn run(raw: &str) -> ::std::result::Result<crate::__aoc_runtime::Invocation, crate::__aoc_runtime::Error> {
                     let start = ::std::time::Instant::now();
                     let mut input = #prepare.map_err(|e| e.timings(start.elapsed(), ::std::time::Duration::ZERO))?;
-                    let generator = if crate::#has_generator { start.elapsed() } else { ::std::time::Duration::ZERO };
+                    let generator = if #selected::HAS { start.elapsed() } else { ::std::time::Duration::ZERO };
 
                     let start = ::std::time::Instant::now();
                     let answer = #timed_solve;
@@ -430,6 +445,17 @@ struct Found {
     reg: Registration,
     function: ItemFn,
     cfg: Vec<Tokens>,
+    generator: bool,
+    /// Module segments below the crate root, as `module_path!()` reports them.
+    module: Vec<String>,
+    file: PathBuf,
+}
+
+#[derive(Default)]
+struct Scan {
+    found: Vec<Found>,
+    sources: Vec<PathBuf>,
+    modules: Vec<Vec<String>>,
 }
 
 fn cfgs(attrs: &[syn::Attribute]) -> Vec<Tokens> {
@@ -446,12 +472,17 @@ fn cfgs(attrs: &[syn::Attribute]) -> Vec<Tokens> {
         .collect()
 }
 
+fn segment(ident: &syn::Ident) -> String {
+    syn::ext::IdentExt::unraw(ident).to_string()
+}
+
 fn scan(
     path: &Path,
+    file: &Path,
+    module: &[String],
     items: Vec<Item>,
     inherited: &[Tokens],
-    found: &mut Vec<Found>,
-    sources: &mut Vec<PathBuf>,
+    out: &mut Scan,
 ) -> syn::Result<()> {
     for item in items {
         match item {
@@ -467,14 +498,17 @@ fn scan(
                         let Meta::List(list) = &attr.meta else {
                             continue;
                         };
-                        let reg =
-                            Registration::parse(list.tokens.clone(), kind == "aoc_generator")?;
+                        let generator = kind == "aoc_generator";
+                        let reg = Registration::parse(list.tokens.clone(), generator)?;
                         let mut cfg = inherited.to_vec();
                         cfg.extend(cfgs(&function.attrs));
-                        found.push(Found {
+                        out.found.push(Found {
                             reg,
                             function: function.clone(),
                             cfg,
+                            generator,
+                            module: module.to_vec(),
+                            file: file.to_owned(),
                         });
                     }
                 }
@@ -482,9 +516,19 @@ fn scan(
             Item::Mod(m) => {
                 let mut cfg = inherited.to_vec();
                 cfg.extend(cfgs(&m.attrs));
+                let mut child = module.to_vec();
+                child.push(segment(&m.ident));
+                out.modules.push(child.clone());
 
                 if let Some((_, items)) = m.content {
-                    scan(&path.join(m.ident.to_string()), items, &cfg, found, sources)?;
+                    scan(
+                        &path.join(m.ident.to_string()),
+                        file,
+                        &child,
+                        items,
+                        &cfg,
+                        out,
+                    )?;
                 } else {
                     let override_path = m
                         .attrs
@@ -500,7 +544,7 @@ fn scan(
                             }
                             None
                         });
-                    let file = override_path.map(|p| path.join(p)).unwrap_or_else(|| {
+                    let source = override_path.map(|p| path.join(p)).unwrap_or_else(|| {
                         let flat = path.join(format!("{}.rs", m.ident));
                         if flat.exists() {
                             flat
@@ -509,24 +553,24 @@ fn scan(
                         }
                     });
                     // Absent cfg-disabled modules are legal Rust.
-                    if !file.exists() && !cfg.is_empty() {
+                    if !source.exists() && !cfg.is_empty() {
                         continue;
                     }
-                    let text = std::fs::read_to_string(&file).map_err(|e| {
+                    let text = std::fs::read_to_string(&source).map_err(|e| {
                         syn::Error::new_spanned(
                             &m.ident,
-                            format!("cannot read {}: {e}", file.display()),
+                            format!("cannot read {}: {e}", source.display()),
                         )
                     })?;
                     let parsed = syn::parse_file(&text)?;
                     cfg.extend(cfgs(&parsed.attrs));
-                    sources.push(file.clone());
-                    let directory = if file.file_name().unwrap() == "mod.rs" {
-                        file.parent().unwrap().to_owned()
+                    out.sources.push(source.clone());
+                    let directory = if source.file_name().unwrap() == "mod.rs" {
+                        source.parent().unwrap().to_owned()
                     } else {
-                        file.with_extension("")
+                        source.with_extension("")
                     };
-                    scan(&directory, parsed.items, &cfg, found, sources)?;
+                    scan(&directory, &source, &child, parsed.items, &cfg, out)?;
                 }
             }
             _ => {}
@@ -537,6 +581,8 @@ fn scan(
 
 struct Entry {
     year: Option<syn::Expr>,
+    years: Option<(syn::Ident, Vec<(syn::Expr, syn::Path)>)>,
+    default_year: Option<(syn::Ident, syn::Expr)>,
     lib: Option<syn::Path>,
     source: Option<String>,
 }
@@ -545,6 +591,8 @@ impl syn::parse::Parse for Entry {
     fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
         let mut entry = Self {
             year: None,
+            years: None,
+            default_year: None,
             lib: None,
             source: None,
         };
@@ -553,6 +601,24 @@ impl syn::parse::Parse for Entry {
             input.parse::<Token![=]>()?;
             match key.to_string().as_str() {
                 "year" if entry.year.is_none() => entry.year = Some(input.parse()?),
+                "years" if entry.years.is_none() => {
+                    let content;
+                    syn::braced!(content in input);
+                    let mut pairs = Vec::new();
+                    while !content.is_empty() {
+                        let year: syn::Expr = content.parse()?;
+                        content.parse::<Token![=>]>()?;
+                        let module = content.call(syn::Path::parse_mod_style)?;
+                        pairs.push((year, module));
+                        if !content.is_empty() {
+                            content.parse::<Token![,]>()?;
+                        }
+                    }
+                    entry.years = Some((key, pairs));
+                }
+                "default_year" if entry.default_year.is_none() => {
+                    entry.default_year = Some((key, input.parse()?))
+                }
                 "lib" if entry.lib.is_none() => entry.lib = Some(input.parse()?),
                 "source" if entry.source.is_none() => {
                     entry.source = Some(input.parse::<syn::LitStr>()?.value())
@@ -560,7 +626,7 @@ impl syn::parse::Parse for Entry {
                 _ => {
                     return Err(syn::Error::new_spanned(
                         key,
-                        "expected year, lib, or source, each once",
+                        "expected year, years, default_year, lib, or source, each once",
                     ))
                 }
             }
@@ -569,6 +635,178 @@ impl syn::parse::Parse for Entry {
             }
         }
         Ok(entry)
+    }
+}
+
+/// One registered event year and the module tree its registrations live in.
+struct Event {
+    /// The year as an expression.
+    value: Tokens,
+    /// The year as a const generic argument.
+    argument: Tokens,
+    /// The literal year from `years = { ... }`; unknown for `year = EXPR`.
+    label: Option<u16>,
+    /// Module segments below the crate root; empty for the crate root.
+    module: Vec<String>,
+    path: Option<syn::Path>,
+}
+
+struct Mapping {
+    events: Vec<Event>,
+    default: Option<usize>,
+    /// The `year = EXPR` expression, evaluated as a constant.
+    constant: Option<syn::Expr>,
+}
+
+fn literal_year(expr: &syn::Expr, role: &str) -> syn::Result<u16> {
+    let syn::Expr::Lit(syn::ExprLit {
+        lit: syn::Lit::Int(int),
+        ..
+    }) = expr
+    else {
+        return Err(syn::Error::new_spanned(
+            expr,
+            format!("{role} must be an integer literal such as 2025"),
+        ));
+    };
+
+    match int.base10_parse::<u16>() {
+        Ok(year) if year >= 2015 => Ok(year),
+        _ => Err(syn::Error::new_spanned(
+            int,
+            format!("{role} must be an Advent of Code event year, 2015 or later"),
+        )),
+    }
+}
+
+fn module_segments(path: &syn::Path) -> syn::Result<Vec<String>> {
+    let mut segments: Vec<_> = path.segments.iter().map(|s| segment(&s.ident)).collect();
+    if segments.first().is_some_and(|s| s == "crate") {
+        segments.remove(0);
+    }
+
+    if path.leading_colon.is_some()
+        || segments.is_empty()
+        || segments
+            .iter()
+            .any(|s| s == "crate" || s == "self" || s == "super")
+    {
+        return Err(syn::Error::new_spanned(
+            path,
+            "map each year to a module below the crate root, such as `2025 => y2025`",
+        ));
+    }
+    Ok(segments)
+}
+
+fn mapping(entry: &Entry, executable: bool) -> syn::Result<Mapping> {
+    if executable {
+        let multi = entry.years.as_ref().map(|(key, _)| key);
+        if let Some(key) = multi.or(entry.default_year.as_ref().map(|(key, _)| key)) {
+            return Err(syn::Error::new_spanned(
+                key,
+                "standalone aoc_main! supports one event year; declare years in aoc_lib! and run the library with aoc_main! { lib = crate_path }",
+            ));
+        }
+    }
+
+    match (&entry.year, &entry.years) {
+        (Some(_), Some((key, _))) => Err(syn::Error::new_spanned(
+            key,
+            "use either year = ... or years = { ... }, not both",
+        )),
+        (Some(year), None) => {
+            if let Some((key, _)) = &entry.default_year {
+                return Err(syn::Error::new_spanned(
+                    key,
+                    "default_year requires years = { ... }",
+                ));
+            }
+
+            Ok(Mapping {
+                events: vec![Event {
+                    value: quote!(crate::__AOC_YEAR),
+                    argument: quote!({ crate::__AOC_YEAR }),
+                    label: None,
+                    module: Vec::new(),
+                    path: None,
+                }],
+                default: Some(0),
+                constant: Some(year.clone()),
+            })
+        }
+        (None, Some((key, pairs))) => {
+            if pairs.is_empty() {
+                return Err(syn::Error::new_spanned(
+                    key,
+                    "years must map at least one event year to a module",
+                ));
+            }
+
+            let mut events: Vec<Event> = Vec::new();
+            for (year, path) in pairs {
+                let label = literal_year(year, "each years key")?;
+                if events.iter().any(|e| e.label == Some(label)) {
+                    return Err(syn::Error::new_spanned(
+                        year,
+                        format!("year {label} is mapped more than once"),
+                    ));
+                }
+
+                let module = module_segments(path)?;
+                for other in &events {
+                    let (a, b) = (module.join("::"), other.module.join("::"));
+                    if other.module == module {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            format!("module `{a}` is mapped more than once"),
+                        ));
+                    }
+                    if module.starts_with(&other.module) || other.module.starts_with(&module) {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            format!("mapped modules must not nest: `{a}` and `{b}`"),
+                        ));
+                    }
+                }
+
+                let literal = proc_macro2::Literal::u16_unsuffixed(label);
+                events.push(Event {
+                    value: quote!(#literal),
+                    argument: quote!(#literal),
+                    label: Some(label),
+                    module,
+                    path: Some(path.clone()),
+                });
+            }
+
+            let default = match &entry.default_year {
+                Some((_, year)) => {
+                    let label = literal_year(year, "default_year")?;
+                    let index = events.iter().position(|e| e.label == Some(label));
+                    Some(index.ok_or_else(|| {
+                        syn::Error::new_spanned(
+                            year,
+                            format!("default_year {label} is not registered in years"),
+                        )
+                    })?)
+                }
+                None => (events.len() == 1).then_some(0),
+            };
+            Ok(Mapping {
+                events,
+                default,
+                constant: None,
+            })
+        }
+        (None, None) => Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            if executable {
+                "expected year = 2025 or lib = crate_path"
+            } else {
+                "expected year = 2025 or years = { 2025 => y2025, ... }"
+            },
+        )),
     }
 }
 
@@ -650,26 +888,27 @@ fn expand_entry(input: TokenStream, executable: bool) -> TokenStream {
     let result = (|| -> syn::Result<Tokens> {
         let entry: Entry = syn::parse(input)?;
         if let Some(lib) = entry.lib {
-            if !executable || entry.year.is_some() || entry.source.is_some() {
+            if !executable
+                || entry.year.is_some()
+                || entry.years.is_some()
+                || entry.default_year.is_some()
+                || entry.source.is_some()
+            {
                 return Err(syn::Error::new_spanned(
                     lib,
-                    "use aoc_main! { lib = crate_path } without year/source",
+                    "use aoc_main! { lib = crate_path } without year, years, or source",
                 ));
             }
             return Ok(quote! { fn main() { ::std::process::exit(#lib::__aoc_harness_main()); } });
         }
-        let year = entry.year.ok_or_else(|| {
-            syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "expected year = 2025 or lib = crate_path",
-            )
-        })?;
         if !executable && entry.source.is_some() {
-            return Err(syn::Error::new_spanned(
-                year,
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
                 "source is only supported by standalone aoc_main!",
             ));
         }
+        let mapping = mapping(&entry, executable)?;
+
         let dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
         let manifest: toml::Value = std::fs::read_to_string(dir.join("Cargo.toml"))
             .map_err(|e| {
@@ -744,43 +983,84 @@ fn expand_entry(input: TokenStream, executable: bool) -> TokenStream {
             ));
         }
 
-        let mut found = Vec::new();
-        let mut sources = vec![root.clone()];
+        let mut scanned = Scan {
+            sources: vec![root.clone()],
+            ..Scan::default()
+        };
         scan(
             root.parent().unwrap(),
+            &root,
+            &[],
             parsed.items,
             &cfgs(&parsed.attrs),
-            &mut found,
-            &mut sources,
+            &mut scanned,
         )?;
 
-        let mut aliases = Vec::new();
-        let mut solutions = Vec::new();
-        let mut generators = Vec::new();
-        let mut adapters = Vec::new();
+        for event in &mapping.events {
+            if let Some(path) = &event.path {
+                if !scanned.modules.contains(&event.module) {
+                    return Err(syn::Error::new_spanned(
+                        path,
+                        format!(
+                            "year {} maps to module `{}`, which the crate does not declare",
+                            event.label.unwrap_or_default(),
+                            event.module.join("::")
+                        ),
+                    ));
+                }
+            }
+        }
+
+        let found = &scanned.found;
+        let mut years = Vec::with_capacity(found.len());
+        for entry in found {
+            let event = mapping
+                .events
+                .iter()
+                .position(|e| entry.module.starts_with(&e.module));
+            let Some(event) = event else {
+                let kind = if entry.generator {
+                    "#[aoc_generator]"
+                } else {
+                    "#[aoc]"
+                };
+                let location = match entry.module.first() {
+                    None => "is at the crate root, outside every module mapped by aoc_lib! years; move it into a year module".to_owned(),
+                    Some(top) => format!(
+                        "is in module `{}`, outside every module mapped by aoc_lib! years; move it into a year module or add `YEAR => {top}` to years",
+                        entry.module.join("::")
+                    ),
+                };
+                return Err(syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    format!(
+                        "{kind} registration `{}` ({}) in {} {location}",
+                        entry.function.sig.ident,
+                        entry.reg.label(),
+                        entry.file.display()
+                    ),
+                ));
+            };
+            years.push(event);
+        }
+        // Diagnostics name the year of `years = { ... }` mappings.
+        let label = |index: usize| match mapping.events[years[index]].label {
+            Some(year) => format!("{year} {}", found[index].reg.label()),
+            None => found[index].reg.label(),
+        };
+
         let mut diagnostics = Vec::new();
         for (index, a) in found.iter().enumerate() {
-            for b in found.iter().skip(index + 1) {
-                let is_generator = |entry: &Found| {
-                    entry.function.attrs.iter().any(|attr| {
-                        attr.path()
-                            .segments
-                            .last()
-                            .is_some_and(|s| s.ident == "aoc_generator")
-                    })
-                };
-                if is_generator(a) == is_generator(b)
+            for (other, b) in found.iter().enumerate().skip(index + 1) {
+                if years[index] == years[other]
+                    && a.generator == b.generator
                     && a.reg.day == b.reg.day
                     && a.reg.part == b.reg.part
                     && a.reg.name == b.reg.name
                 {
                     let conditions = a.cfg.iter().chain(&b.cfg);
-                    let kind = if is_generator(a) {
-                        "generator"
-                    } else {
-                        "solution"
-                    };
-                    let message = format!("duplicate {kind} identity: {}", a.reg.label());
+                    let kind = if a.generator { "generator" } else { "solution" };
+                    let message = format!("duplicate {kind} identity: {}", label(index));
                     diagnostics.push(quote! {
                         #[cfg(all(#(#conditions),*))]
                         compile_error!(#message);
@@ -788,7 +1068,14 @@ fn expand_entry(input: TokenStream, executable: bool) -> TokenStream {
                 }
             }
         }
-        for entry in &found {
+
+        let mut markers = std::collections::BTreeMap::new();
+        let mut selections = Vec::new();
+        let mut solutions = vec![Vec::new(); mapping.events.len()];
+        let mut generators = vec![Vec::new(); mapping.events.len()];
+        for (index, entry) in found.iter().enumerate() {
+            let event = years[index];
+            let year = &mapping.events[event].argument;
             let reg = &entry.reg;
             let day = reg.day;
             let part = reg.part.unwrap_or(0);
@@ -797,49 +1084,42 @@ fn expand_entry(input: TokenStream, executable: bool) -> TokenStream {
             let explicit = reg.default;
             let cfg = &entry.cfg;
             let function = &entry.function.sig.ident;
-            let is_generator = entry.function.attrs.iter().any(|a| {
-                a.path()
-                    .segments
-                    .last()
-                    .is_some_and(|s| s.ident == "aoc_generator")
-            });
-            let adapter = reg.adapter(is_generator, function);
-            adapters.push(quote! {
-                #[doc(hidden)]
-                #[cfg(all(#(#cfg),*))]
-                #[allow(non_camel_case_types)]
-                pub(crate) struct #adapter;
-            });
-            if is_generator {
-                generators.push(quote! {
+            let adapter = reg.adapter(entry.generator, function);
+            markers.insert(adapter.to_string(), adapter.clone());
+            if entry.generator {
+                generators[event].push(quote! {
                     #[cfg(all(#(#cfg),*))]
-                    crate::__aoc_runtime::Generator { day: #day, part: #part, name: #name, bench: crate::#adapter::bench, check: crate::#adapter::check }
+                    crate::__aoc_runtime::Generator {
+                        day: #day, part: #part, name: #name,
+                        bench: crate::#adapter::<#year>::bench, check: crate::#adapter::<#year>::check,
+                    }
                 });
                 continue;
             }
 
-            solutions.push(quote! {
+            solutions[event].push(quote! {
                 #[cfg(all(#(#cfg),*))]
                 crate::__aoc_runtime::Solution {
                     day: #day, part: #part, name: #name, named: #named, explicit_default: #explicit,
-                    run: crate::#adapter::run, execute: crate::#adapter::execute, bench: crate::#adapter::bench,
+                    run: crate::#adapter::<#year>::run, execute: crate::#adapter::<#year>::execute,
+                    bench: crate::#adapter::<#year>::bench,
                 }
             });
 
+            // Each solution selects the most specific active generator of its own year.
             let alias = reg.alias(function);
-            let has_generator = format_ident!("{}_generated", alias);
+            markers.insert(alias.to_string(), alias.clone());
             let mut candidates: Vec<_> = found
                 .iter()
-                .filter(|g| {
-                    g.function.attrs.iter().any(|a| {
-                        a.path()
-                            .segments
-                            .last()
-                            .is_some_and(|s| s.ident == "aoc_generator")
-                    }) && g.reg.day == day
+                .zip(&years)
+                .filter(|(g, year)| {
+                    g.generator
+                        && **year == event
+                        && g.reg.day == day
                         && (g.reg.part.is_none() || g.reg.part == reg.part)
                         && (g.reg.name.is_none() || g.reg.name == reg.name)
                 })
+                .map(|(g, _)| g)
                 .collect();
             candidates
                 .sort_by_key(|g| std::cmp::Reverse((g.reg.part.is_some(), g.reg.name.is_some())));
@@ -848,12 +1128,12 @@ fn expand_entry(input: TokenStream, executable: bool) -> TokenStream {
                 let conditions = &candidate.cfg;
                 let condition = quote!(all(#(#conditions),*));
                 let generator = candidate.reg.adapter(true, &candidate.function.sig.ident);
-                aliases.push(quote! {
+                selections.push(quote! {
                     #[cfg(all(#(#cfg,)* #condition, not(any(#(#higher),*))))]
-                    pub(crate) use crate::#generator as #alias;
-                    #[cfg(all(#(#cfg,)* #condition, not(any(#(#higher),*))))]
-                    #[allow(non_upper_case_globals)]
-                    pub(crate) const #has_generator: bool = true;
+                    impl crate::__aoc_runtime::Select for crate::#alias<#year> {
+                        type Generator = crate::#generator<#year>;
+                        const HAS: bool = true;
+                    }
                 });
                 higher.push(condition);
             }
@@ -861,9 +1141,9 @@ fn expand_entry(input: TokenStream, executable: bool) -> TokenStream {
             let arg = argument(&entry.function)?;
             let raw = match arg {
                 Type::Reference(r) if r.mutability.is_none() => match &*r.elem {
-                    Type::Path(p) if p.path.is_ident("str") => Some(quote!(&str)),
+                    Type::Path(p) if p.path.is_ident("str") => Some(format_ident!("RawStr")),
                     Type::Slice(s) if matches!(&*s.elem, Type::Path(p) if p.path.is_ident("u8")) => {
-                        Some(quote!(&[u8]))
+                        Some(format_ident!("RawBytes"))
                     }
                     _ => None,
                 },
@@ -872,36 +1152,81 @@ fn expand_entry(input: TokenStream, executable: bool) -> TokenStream {
             let fallback = if reg.borrow {
                 let error = format!(
                     "input = \"borrow\" requires a registered generator for {}",
-                    reg.label()
+                    label(index)
                 );
                 quote!(compile_error!(#error);)
-            } else if let Some(out) = raw {
-                let input = if out.to_string().contains("u8") {
-                    quote!(raw.as_bytes())
-                } else {
-                    quote!(raw)
-                };
+            } else if let Some(raw) = raw {
                 quote! {
-                    #[allow(non_camel_case_types)]
-                    pub(crate) struct #alias;
-                    #[cfg(all(#(#cfg,)* not(any(#(#higher),*))))]
-                    impl #alias {
-                        pub(crate) fn parse(raw: &str) -> ::std::result::Result<#out, crate::__aoc_runtime::Error> { ::std::result::Result::Ok(#input) }
+                    impl crate::__aoc_runtime::Select for crate::#alias<#year> {
+                        type Generator = crate::__aoc_runtime::#raw;
+                        const HAS: bool = false;
                     }
                 }
             } else {
-                let error = format!("no generator registered for {}", reg.label());
+                let error = format!("no generator registered for {}", label(index));
                 quote!(compile_error!(#error);)
             };
-            aliases.push(quote! {
+            selections.push(quote! {
                 #[cfg(all(#(#cfg,)* not(any(#(#higher),*))))]
                 #fallback
-                #[cfg(all(#(#cfg,)* not(any(#(#higher),*))))]
-                #[allow(non_upper_case_globals)]
-                pub(crate) const #has_generator: bool = false;
             });
         }
-        let sources = sources.iter().map(|p| p.to_string_lossy().into_owned());
+        let sources = scanned
+            .sources
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned());
+        let markers = markers.values().map(|marker| {
+            quote! {
+                #[doc(hidden)]
+                #[allow(non_camel_case_types, dead_code)]
+                pub(crate) struct #marker<const YEAR: u16>;
+            }
+        });
+        let validations = solutions.iter().zip(&generators).map(
+            |(s, g)| quote!(const _: () = crate::__aoc_runtime::validate(&[#(#s),*], &[#(#g),*]);),
+        );
+        let registries = mapping
+            .events
+            .iter()
+            .zip(solutions.iter().zip(&generators))
+            .map(|(event, (s, g))| {
+                let year = &event.value;
+                quote! {
+                    crate::__aoc_runtime::Registry {
+                        year: #year, manifest_dir: ::core::env!("CARGO_MANIFEST_DIR"),
+                        solutions: &[#(#s),*], generators: &[#(#g),*],
+                    }
+                }
+            });
+        let year_of = mapping.events.iter().map(|event| {
+            let year = &event.value;
+            let module = if event.module.is_empty() {
+                quote!(::core::module_path!())
+            } else {
+                let suffix = format!("::{}", event.module.join("::"));
+                quote!(::core::concat!(::core::module_path!(), #suffix))
+            };
+            quote! {
+                if crate::__aoc_runtime::within_module(path, #module) {
+                    return #year;
+                }
+            }
+        });
+        let default = match mapping.default {
+            Some(index) => {
+                let year = &mapping.events[index].value;
+                quote!(::core::option::Option::Some(#year))
+            }
+            None => quote!(::core::option::Option::None),
+        };
+        let single = mapping.events.len() == 1;
+        // A non-constant `year = EXPR` fails here, at the user's expression.
+        let constant = mapping.constant.as_ref().map(|year| {
+            quote! {
+                #[doc(hidden)]
+                const __AOC_YEAR: u16 = #year;
+            }
+        });
 
         let main = executable.then(|| {
             quote! {
@@ -913,24 +1238,43 @@ fn expand_entry(input: TokenStream, executable: bool) -> TokenStream {
             #main
             #[doc(hidden)]
             pub use ::#runtime as __aoc_runtime;
-
-            #(#diagnostics)*
-            #(#adapters)*
-            #(#aliases)*
-            const _: () = { #(let _ = include_str!(#sources);)* };
-            const _: () = crate::__aoc_runtime::validate(&[#(#solutions),*], &[#(#generators),*]);
+            #constant
 
             #[doc(hidden)]
-            pub fn __aoc_registry() -> crate::__aoc_runtime::Registry {
-                crate::__aoc_runtime::Registry {
-                    year: #year, manifest_dir: env!("CARGO_MANIFEST_DIR"),
-                    solutions: &[#(#solutions),*], generators: &[#(#generators),*],
-                }
+            #[allow(dead_code)]
+            const __AOC_SINGLE_YEAR: bool = #single;
+
+            /// Maps a registration's `module_path!()` to the event year of its mapped module.
+            #[doc(hidden)]
+            #[allow(dead_code)]
+            pub(crate) const fn __aoc_year_of(path: &str) -> u16 {
+                #(#year_of)*
+                ::core::panic!("an #[aoc] or #[aoc_generator] registration is outside every module mapped by aoc_lib! years")
+            }
+
+            #(#diagnostics)*
+            #(#markers)*
+            #(#selections)*
+            const _: () = { #(let _ = include_str!(#sources);)* };
+            #(#validations)*
+
+            #[doc(hidden)]
+            pub fn __aoc_events() -> crate::__aoc_runtime::Events {
+                const REGISTRIES: &[crate::__aoc_runtime::Registry] = &[#(#registries),*];
+                crate::__aoc_runtime::Events { default_year: #default, registries: REGISTRIES }
+            }
+
+            /// The only registered year's registry, or the default year's.
+            #[doc(hidden)]
+            pub fn __aoc_registry() -> &'static crate::__aoc_runtime::Registry {
+                crate::__aoc_events()
+                    .registry(::core::option::Option::None)
+                    .unwrap_or_else(|error| ::core::panic!("{error}"))
             }
 
             #[doc(hidden)]
             pub fn __aoc_harness_main() -> i32 {
-                crate::__aoc_runtime::entry(__aoc_registry())
+                crate::__aoc_runtime::entry(__aoc_events())
             }
         })
     })();
