@@ -61,6 +61,21 @@ fn is_single_digit_day(ident: &str, padded: bool) -> bool {
     matches!(digits.as_bytes(), [b'1'..=b'9'])
 }
 
+/// Reports whether a module file's inner attributes may compile it out.
+fn has_inner_cfg(file: &syn::File) -> bool {
+    file.attrs
+        .iter()
+        .any(|a| a.path().is_ident("cfg") || a.path().is_ident("cfg_attr"))
+}
+
+fn inner_cfg(module: &[String], file: &Path) -> String {
+    format!(
+        "module `{}` has inner cfg attributes in {}; generate days there manually",
+        module.join("::"),
+        file.display()
+    )
+}
+
 /// Find the file and child-module directory of the year module at `module`,
 /// below the library root. Each segment must be one plain `mod name;`
 /// declaration backed by exactly one of `name.rs` or `name/mod.rs`.
@@ -82,6 +97,9 @@ fn module_source(
             .map_err(|e| format!("read source {}: {e}", file.display()))?;
         let parsed =
             syn::parse_file(&text).map_err(|e| format!("parse source {}: {e}", file.display()))?;
+        if depth > 0 && has_inner_cfg(&parsed) {
+            return Err(inner_cfg(&module[..depth], &file));
+        }
 
         let declarations: Vec<_> = parsed
             .items
@@ -174,6 +192,9 @@ impl ScaffoldPlan {
             fs::read_to_string(root).map_err(|e| format!("read source {}: {e}", root.display()))?;
         let parsed = syn::parse_file(&original)
             .map_err(|e| format!("parse source {}: {e}", root.display()))?;
+        if !module.is_empty() && has_inner_cfg(&parsed) {
+            return Err(inner_cfg(module, root));
+        }
         let permissions = fs::metadata(root)
             .map_err(|e| format!("source permissions: {e}"))?
             .permissions();
@@ -807,6 +828,45 @@ mod year_module_tests {
             );
             assert_eq!(fs::read_to_string(&root).unwrap(), original);
             assert!(!temp.path().join("y2019/day01.rs").exists());
+        }
+    }
+
+    #[test]
+    fn year_modules_gated_by_inner_cfg_fail_before_writing() {
+        for (outer, inner, gated) in [
+            ("", "#![cfg(feature = \"old\")]\n", "events::y2019"),
+            ("#![cfg_attr(test, cfg(any()))]\n", "", "events"),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("lib.rs");
+            fs::write(
+                &root,
+                "mod events;\naoc_harness::aoc_lib! { years = { 2019 => events::y2019 } }\n",
+            )
+            .unwrap();
+            fs::create_dir_all(temp.path().join("events")).unwrap();
+            fs::write(
+                temp.path().join("events.rs"),
+                format!("{outer}pub mod y2019;\n"),
+            )
+            .unwrap();
+            fs::write(temp.path().join("events/y2019.rs"), inner).unwrap();
+
+            let result = ScaffoldPlan::prepare(
+                temp.path(),
+                &root,
+                &module(&["events", "y2019"]),
+                &[1],
+                None,
+                || Ok(2019),
+            );
+
+            let error = result.err().unwrap();
+            assert!(
+                error.contains(&format!("module `{gated}` has inner cfg")),
+                "{error}"
+            );
+            assert!(!temp.path().join("events/y2019/day01.rs").exists());
         }
     }
 }
