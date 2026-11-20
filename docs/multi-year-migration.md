@@ -53,9 +53,11 @@ and by the common crate. Drop the dependency on `advent-of-code-common` itself.
 aoc-harness = "0.5.0"
 ```
 
-If you want to keep each repository's history, import it first, for example with
-`git subtree add --prefix=import/2019 ../advent-of-code-2019 main`, then move the
-files out of `import/` in the steps below.
+If you want to keep each repository's history, commit the new crate, then import
+each repository, for example with
+`git subtree add --prefix=import/2019 ../advent-of-code-2019 main`, and move the
+files out of `import/` in the steps below. `git subtree add` needs an existing
+commit and a clean working tree.
 
 ## 2. Move each year's day modules
 
@@ -157,6 +159,8 @@ For one year's directory at a time:
 ```sh
 grep -rl 'input!(' src/y2019 | xargs sed -i '' -E 's/input!\(([0-9]+)\)/input!(2019, \1)/g'
 ```
+
+On Linux, use `sed -i -E` without the empty `''` argument.
 
 The compiler reports every remaining `input!(day)`. A custom day template with
 `input!(@DAY@)` should become `input!(@YEAR@, @DAY@)`, which works in single-year

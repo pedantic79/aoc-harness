@@ -530,8 +530,8 @@ Without `--year`, commands use the only registered year or `default_year`; with
 several years and no default, they list the registered years and ask for one.
 Plain `list` shows every year, ordered by year, and `list --year` narrows it.
 An unregistered year is rejected before credentials, downloads, or source
-writes. `generate --year 2019` writes `day02.rs` beside the `y2019` module
-(`src/y2019/mod.rs` or `src/y2019.rs`), declares it there, and follows that
+writes. `generate --year 2019` writes `src/y2019/day02.rs`, declares it in the
+`y2019` module (`src/y2019/mod.rs` or `src/y2019.rs`), and follows that
 module's padded or unpadded naming. `@YEAR@` in a day template expands to the
 selected year.
 

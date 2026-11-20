@@ -38,8 +38,8 @@ with several years and no default, they list the registered years and ask for
 one. The wall clock never picks the year. Plain `list` shows every year, and
 `list --year` narrows it. `--year` must name a registered year, including in
 single-year crates, where it must match the declared year. An unknown year is
-rejected before credentials are read, inputs are downloaded, or files are
-written. `--year` requires an `aoc-harness` 0.5.0 or later runtime; the CLI
+rejected before credentials are read, inputs are downloaded, or source files
+are written. `--year` requires an `aoc-harness` 0.5.0 or later runtime; the CLI
 asks you to upgrade an older one. `input --year 2019 --all` downloads only
 that event's released days. The
 [migration guide](https://github.com/pedantic79/aoc-harness/blob/main/docs/multi-year-migration.md)
@@ -59,10 +59,10 @@ input-dir = "../advent-of-code-input"
 
 `cargo aoc-harness generate -d 2` creates `src/day02.rs` and adds `mod day02;`
 before `aoc_lib!` in `src/lib.rs`. In a multi-year crate, `generate --year 2019`
-writes the day beside the year's module (`src/y2019/mod.rs` or `src/y2019.rs`)
-and declares it there. New module names use two-digit day numbers,
-unless the library root already declares only unpadded single-digit modules
-such as `mod day4;`. Days whose declaration and file already match are skipped;
+writes `src/y2019/day02.rs` and declares it in the year's module
+(`src/y2019/mod.rs` or `src/y2019.rs`). New module names use two-digit day
+numbers, unless the library root, or the year's module in a multi-year crate,
+already declares only unpadded single-digit modules such as `mod day4;`. Days whose declaration and file already match are skipped;
 an undeclared day file or a mismatched declaration stops generation before
 anything is written. Add `--dry-run` to preview the changes.
 
