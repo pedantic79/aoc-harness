@@ -12,6 +12,8 @@ struct NewFile {
 
 pub(crate) struct ScaffoldPlan {
     package: PathBuf,
+    /// The source file that declares the day modules: the library root, or
+    /// the selected year's module file.
     root: PathBuf,
     original: String,
     replacement: String,
@@ -59,29 +61,143 @@ fn is_single_digit_day(ident: &str, padded: bool) -> bool {
     matches!(digits.as_bytes(), [b'1'..=b'9'])
 }
 
+/// Reports whether a module file's inner attributes may compile it out.
+fn has_inner_cfg(file: &syn::File) -> bool {
+    file.attrs
+        .iter()
+        .any(|a| a.path().is_ident("cfg") || a.path().is_ident("cfg_attr"))
+}
+
+fn inner_cfg(module: &[String], file: &Path) -> String {
+    format!(
+        "module `{}` has inner cfg attributes in {}; generate days there manually",
+        module.join("::"),
+        file.display()
+    )
+}
+
+/// Find the file and child-module directory of the year module at `module`,
+/// below the library root. Each segment must be one plain `mod name;`
+/// declaration backed by exactly one of `name.rs` or `name/mod.rs`.
+fn module_source(
+    package: &Path,
+    library: &Path,
+    module: &[String],
+) -> Result<(PathBuf, PathBuf), String> {
+    let mut file = library.to_owned();
+    let mut directory = library.parent().unwrap().to_owned();
+
+    for (depth, segment) in module.iter().enumerate() {
+        let path = module[..=depth].join("::");
+        let ambiguous = |reason: &str| {
+            format!("year module `{path}` {reason}; generate days there manually or declare it as a plain `mod {segment};` backed by {segment}.rs or {segment}/mod.rs")
+        };
+        safe_source(package, &file)?;
+        let text = fs::read_to_string(&file)
+            .map_err(|e| format!("read source {}: {e}", file.display()))?;
+        let parsed =
+            syn::parse_file(&text).map_err(|e| format!("parse source {}: {e}", file.display()))?;
+        if depth > 0 && has_inner_cfg(&parsed) {
+            return Err(inner_cfg(&module[..depth], &file));
+        }
+
+        let declarations: Vec<_> = parsed
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Mod(m) if m.ident == segment => Some(m),
+                _ => None,
+            })
+            .collect();
+        let [declaration] = declarations[..] else {
+            return Err(ambiguous(&format!(
+                "must be declared exactly once in {}",
+                file.display()
+            )));
+        };
+        if declaration.content.is_some() {
+            return Err(ambiguous("is an inline module"));
+        }
+        if declaration.attrs.iter().any(|a| {
+            a.path().is_ident("cfg") || a.path().is_ident("cfg_attr") || a.path().is_ident("path")
+        }) {
+            return Err(ambiguous("has cfg or path attributes"));
+        }
+
+        let candidates = [
+            directory.join(format!("{segment}.rs")),
+            directory.join(segment).join("mod.rs"),
+        ];
+        let mut existing = Vec::new();
+        for candidate in candidates {
+            safe_source(package, &candidate)?;
+            match fs::symlink_metadata(&candidate) {
+                Ok(meta) if meta.is_file() => existing.push(candidate),
+                Ok(_) => return Err(format!("conflicting source path {}", candidate.display())),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("inspect {}: {e}", candidate.display())),
+            }
+        }
+        let [found] = &existing[..] else {
+            return Err(ambiguous(if existing.is_empty() {
+                "has no source file"
+            } else {
+                "has both a flat and a mod.rs source file"
+            }));
+        };
+
+        file = found.clone();
+        directory = directory.join(segment);
+    }
+
+    Ok((file, directory))
+}
+
+/// The byte offset of the start of the line after `line` (1-based), and
+/// whether the text before it lacks a trailing newline.
+fn after_line(text: &str, line: usize) -> (usize, bool) {
+    let offset: usize = text.split_inclusive('\n').take(line).map(str::len).sum();
+
+    (offset, offset > 0 && !text[..offset].ends_with('\n'))
+}
+
 impl ScaffoldPlan {
+    /// Plan new day modules under `module`, a path of module segments below
+    /// the library root; an empty path targets the root itself.
     pub fn prepare(
         package: &Path,
-        root: &Path,
+        library: &Path,
+        module: &[String],
         days: &[u8],
         template_path: Option<&Path>,
         resolve_year: impl FnOnce() -> Result<u16, String>,
     ) -> Result<Self, String> {
-        safe_source(package, root)?;
-        let original =
-            fs::read_to_string(root).map_err(|e| format!("read source {}: {e}", root.display()))?;
-        let parsed = syn::parse_file(&original)
-            .map_err(|e| format!("parse source {}: {e}", root.display()))?;
-        let permissions = fs::metadata(root)
-            .map_err(|e| format!("source permissions: {e}"))?
-            .permissions();
-        let entries: Vec<_> = parsed.items.iter().filter(|item| matches!(item, Item::Macro(m) if m.mac.path.segments.last().is_some_and(|s| s.ident == "aoc_lib"))).collect();
+        safe_source(package, library)?;
+        let library_text = fs::read_to_string(library)
+            .map_err(|e| format!("read source {}: {e}", library.display()))?;
+        let library_parsed = syn::parse_file(&library_text)
+            .map_err(|e| format!("parse source {}: {e}", library.display()))?;
+        let entries: Vec<_> = library_parsed.items.iter().filter(|item| matches!(item, Item::Macro(m) if m.mac.path.segments.last().is_some_and(|s| s.ident == "aoc_lib"))).collect();
         if entries.len() != 1 {
             return Err(
                 "scaffolding requires exactly one direct aoc_lib! invocation in the library root"
                     .into(),
             );
         }
+
+        let (root, directory) = module_source(package, library, module)?;
+        let root = root.as_path();
+        let directory = directory.as_path();
+        let original =
+            fs::read_to_string(root).map_err(|e| format!("read source {}: {e}", root.display()))?;
+        let parsed = syn::parse_file(&original)
+            .map_err(|e| format!("parse source {}: {e}", root.display()))?;
+        if !module.is_empty() && has_inner_cfg(&parsed) {
+            return Err(inner_cfg(module, root));
+        }
+        let permissions = fs::metadata(root)
+            .map_err(|e| format!("source permissions: {e}"))?
+            .permissions();
         let mut files = Vec::new();
         let mut declarations = String::new();
         let newline = if original.contains("\r\n") {
@@ -142,8 +258,8 @@ impl ScaffoldPlan {
                 .iter()
                 .flat_map(|n| {
                     [
-                        root.parent().unwrap().join(format!("{n}.rs")),
-                        root.parent().unwrap().join(n).join("mod.rs"),
+                        directory.join(format!("{n}.rs")),
+                        directory.join(n).join("mod.rs"),
                     ]
                 })
                 .collect();
@@ -159,17 +275,11 @@ impl ScaffoldPlan {
                     Err(e) => return Err(format!("inspect {}: {e}", path.display())),
                 }
             }
-            let directory_modules = names
-                .iter()
-                .any(|n| root.parent().unwrap().join(n).exists());
+            let directory_modules = names.iter().any(|n| directory.join(n).exists());
             if modules.len() == 1 && existing.len() == 1 {
                 let module = modules[0];
-                let expected = root.parent().unwrap().join(format!("{}.rs", module.ident));
-                let directory_source = root
-                    .parent()
-                    .unwrap()
-                    .join(module.ident.to_string())
-                    .join("mod.rs");
+                let expected = directory.join(format!("{}.rs", module.ident));
+                let directory_source = directory.join(module.ident.to_string()).join("mod.rs");
                 if module.content.is_none()
                     && !module.attrs.iter().any(|a| {
                         a.path().is_ident("cfg")
@@ -191,7 +301,8 @@ impl ScaffoldPlan {
             declarations.push_str(&format!("mod {name};{newline}"));
         }
         let mut replacement = original.clone();
-        if !files.is_empty() {
+        if !files.is_empty() && module.is_empty() {
+            // The library root is the target, so its aoc_lib! anchors the declarations.
             let start = entries[0].span().start();
             let offset = original
                 .split_inclusive('\n')
@@ -200,6 +311,31 @@ impl ScaffoldPlan {
                 .sum::<usize>()
                 + start.column;
             replacement.insert_str(offset, &format!("{declarations}{newline}"));
+        } else if !files.is_empty() {
+            // Year modules have no aoc_lib! anchor: follow the last file
+            // module declaration, else the inner attributes, else the top.
+            let last_module = parsed
+                .items
+                .iter()
+                .rev()
+                .find(|i| matches!(i, Item::Mod(m) if m.content.is_none()));
+            let last_inner = parsed
+                .attrs
+                .iter()
+                .rfind(|a| matches!(a.style, syn::AttrStyle::Inner(_)));
+            let (line, separate) = match (last_module, last_inner) {
+                (Some(item), _) => (item.span().end().line, false),
+                (None, Some(attribute)) => (attribute.span().end().line, true),
+                (None, None) => (0, true),
+            };
+            let (offset, unterminated) = after_line(&original, line);
+            let separator = if separate && offset < original.len() {
+                newline
+            } else {
+                ""
+            };
+            let lead = if unterminated { newline } else { "" };
+            replacement.insert_str(offset, &format!("{lead}{declarations}{separator}"));
         }
         Ok(Self {
             package: package.to_owned(),
@@ -278,6 +414,10 @@ impl ScaffoldPlan {
         let mut created: Vec<&NewFile> = Vec::new();
         let result = (|| {
             for file in &self.files {
+                // A flat year module, y2019.rs, keeps its days in y2019/.
+                let directory = file.path.parent().unwrap();
+                fs::create_dir_all(directory)
+                    .map_err(|e| format!("create {}: {e}", directory.display()))?;
                 let mut temporary = tempfile::NamedTempFile::new_in(file.path.parent().unwrap())
                     .map_err(|e| format!("create temporary source: {e}"))?;
                 temporary
@@ -347,7 +487,8 @@ mod tests {
         let root = temp.path().join("custom.rs");
         let original = "//! Inner docs\r\n#![allow(dead_code)]\r\nuse aoc_harness::aoc_lib;\r\naoc_lib! { year = 2025 }\r\n";
         fs::write(&root, original).unwrap();
-        let plan = ScaffoldPlan::prepare(temp.path(), &root, &[4, 5], None, || Ok(2025)).unwrap();
+        let plan =
+            ScaffoldPlan::prepare(temp.path(), &root, &[], &[4, 5], None, || Ok(2025)).unwrap();
 
         assert_eq!(fs::read_to_string(&root).unwrap(), original);
         assert!(plan
@@ -355,16 +496,18 @@ mod tests {
             .contains("mod day04;\r\nmod day05;\r\n\r\naoc_lib!"));
         plan.apply().unwrap();
         let after = fs::read(&root).unwrap();
-        ScaffoldPlan::prepare(temp.path(), &root, &[4, 5], None, || Ok(2025))
+        ScaffoldPlan::prepare(temp.path(), &root, &[], &[4, 5], None, || Ok(2025))
             .unwrap()
             .apply()
             .unwrap();
 
         assert_eq!(fs::read(&root).unwrap(), after);
         fs::write(temp.path().join("day7.rs"), "conflict").unwrap();
-        assert!(ScaffoldPlan::prepare(temp.path(), &root, &[6, 7], None, || Ok(2025)).is_err());
+        assert!(
+            ScaffoldPlan::prepare(temp.path(), &root, &[], &[6, 7], None, || Ok(2025)).is_err()
+        );
         assert!(!temp.path().join("day06.rs").exists());
-        let plan = ScaffoldPlan::prepare(temp.path(), &root, &[6], None, || Ok(2025)).unwrap();
+        let plan = ScaffoldPlan::prepare(temp.path(), &root, &[], &[6], None, || Ok(2025)).unwrap();
         fs::write(&root, "// user edit").unwrap();
 
         assert!(plan.apply().is_err());
@@ -385,7 +528,7 @@ mod tests {
             fs::write(&existing, "// existing").unwrap();
 
             let plan =
-                ScaffoldPlan::prepare(temp.path(), &root, &[4, 5], None, || Ok(2025)).unwrap();
+                ScaffoldPlan::prepare(temp.path(), &root, &[], &[4, 5], None, || Ok(2025)).unwrap();
 
             assert_eq!(plan.files.len(), 1);
             assert_eq!(plan.files[0].path, temp.path().join(generated));
@@ -421,7 +564,8 @@ mod tests {
                 fs::write(temp.path().join(format!("{module}.rs")), "").unwrap();
             }
 
-            let plan = ScaffoldPlan::prepare(temp.path(), &root, &[5], None, || Ok(2025)).unwrap();
+            let plan =
+                ScaffoldPlan::prepare(temp.path(), &root, &[], &[5], None, || Ok(2025)).unwrap();
 
             assert_eq!(
                 plan.files[0].path,
@@ -441,14 +585,16 @@ mod tests {
         let root = temp.path().join("lib.rs");
         fs::write(&root, "aoc_harness::aoc_lib! { year = 2025 }\n").unwrap();
 
-        let plan = ScaffoldPlan::prepare(temp.path(), &root, &[10], None, || Ok(2025)).unwrap();
+        let plan =
+            ScaffoldPlan::prepare(temp.path(), &root, &[], &[10], None, || Ok(2025)).unwrap();
 
         assert_eq!(plan.files.len(), 1);
         assert_eq!(plan.files[0].path, temp.path().join("day10.rs"));
 
         plan.apply().unwrap();
         let after = fs::read(&root).unwrap();
-        let rerun = ScaffoldPlan::prepare(temp.path(), &root, &[10], None, || Ok(2025)).unwrap();
+        let rerun =
+            ScaffoldPlan::prepare(temp.path(), &root, &[], &[10], None, || Ok(2025)).unwrap();
 
         assert!(rerun.files.is_empty());
         rerun.apply().unwrap();
@@ -479,7 +625,7 @@ mod conflict_tests {
             let original = fs::read(&root).unwrap();
 
             assert!(
-                ScaffoldPlan::prepare(temp.path(), &root, &[3, 4], None, || Ok(2025)).is_err(),
+                ScaffoldPlan::prepare(temp.path(), &root, &[], &[3, 4], None, || Ok(2025)).is_err(),
                 "{declaration}"
             );
             assert_eq!(fs::read(&root).unwrap(), original);
@@ -497,7 +643,7 @@ mod conflict_tests {
         fs::create_dir(temp.path().join("day04")).unwrap();
         fs::write(temp.path().join("day04/mod.rs"), "// existing code").unwrap();
 
-        ScaffoldPlan::prepare(temp.path(), &root, &[4], None, || Ok(2025))
+        ScaffoldPlan::prepare(temp.path(), &root, &[], &[4], None, || Ok(2025))
             .unwrap()
             .apply()
             .unwrap();
@@ -518,8 +664,8 @@ mod conflict_tests {
         fs::set_permissions(&root, fs::Permissions::from_mode(0o640)).unwrap();
         symlink(&root, &linked).unwrap();
 
-        assert!(ScaffoldPlan::prepare(temp.path(), &linked, &[1], None, || Ok(2025)).is_err());
-        ScaffoldPlan::prepare(temp.path(), &root, &[1], None, || Ok(2025))
+        assert!(ScaffoldPlan::prepare(temp.path(), &linked, &[], &[1], None, || Ok(2025)).is_err());
+        ScaffoldPlan::prepare(temp.path(), &root, &[], &[1], None, || Ok(2025))
             .unwrap()
             .apply()
             .unwrap();
@@ -528,5 +674,199 @@ mod conflict_tests {
             fs::metadata(root).unwrap().permissions().mode() & 0o777,
             0o640
         );
+    }
+}
+
+#[cfg(test)]
+mod year_module_tests {
+    use super::*;
+
+    const LIBRARY: &str =
+        "pub mod common;\nmod y2019;\naoc_harness::aoc_lib! { years = { 2019 => y2019 } }\n";
+
+    fn module(path: &[&str]) -> Vec<String> {
+        path.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn days_are_generated_beside_mod_rs_and_flat_year_modules() {
+        for (source, existing) in [
+            (
+                "y2019/mod.rs",
+                "//! The 2019 event.\nmod day1;\n\nfn helper() {}\n",
+            ),
+            (
+                "y2019.rs",
+                "//! The 2019 event.\nmod day1;\n\nfn helper() {}\n",
+            ),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("lib.rs");
+            let year = temp.path().join(source);
+            fs::write(&root, LIBRARY).unwrap();
+            fs::create_dir_all(year.parent().unwrap()).unwrap();
+            fs::write(&year, existing).unwrap();
+            if source == "y2019.rs" {
+                fs::create_dir(temp.path().join("y2019")).unwrap();
+            }
+            fs::write(temp.path().join("y2019/day1.rs"), "// existing").unwrap();
+            let template = temp.path().join("template.rs");
+            fs::write(&template, "// @YEAR@ day @DAY@\n").unwrap();
+
+            let plan = ScaffoldPlan::prepare(
+                temp.path(),
+                &root,
+                &module(&["y2019"]),
+                &[1, 2],
+                Some(&template),
+                || Ok(2019),
+            )
+            .unwrap();
+
+            assert_eq!(fs::read_to_string(&root).unwrap(), LIBRARY);
+            assert_eq!(plan.root, year, "{source}");
+            assert_eq!(plan.files.len(), 1, "{source}");
+            assert_eq!(plan.files[0].path, temp.path().join("y2019/day2.rs"));
+            assert_eq!(plan.files[0].contents, "// 2019 day 2\n");
+            assert_eq!(
+                plan.replacement,
+                "//! The 2019 event.\nmod day1;\nmod day2;\n\nfn helper() {}\n"
+            );
+
+            plan.apply().unwrap();
+
+            assert_eq!(fs::read_to_string(&root).unwrap(), LIBRARY);
+            assert!(fs::read_to_string(&year).unwrap().contains("mod day2;"));
+            assert!(temp.path().join("y2019/day2.rs").is_file());
+        }
+    }
+
+    #[test]
+    fn a_flat_year_module_without_days_gets_a_directory_and_padded_names() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("lib.rs");
+        fs::write(&root, LIBRARY).unwrap();
+        fs::write(
+            temp.path().join("y2019.rs"),
+            "#![allow(dead_code)]\nuse std::fmt;\n",
+        )
+        .unwrap();
+
+        let plan =
+            ScaffoldPlan::prepare(temp.path(), &root, &module(&["y2019"]), &[3], None, || {
+                Ok(2019)
+            })
+            .unwrap();
+
+        assert_eq!(
+            plan.replacement,
+            "#![allow(dead_code)]\nmod day03;\n\nuse std::fmt;\n"
+        );
+        plan.apply().unwrap();
+        assert!(temp.path().join("y2019/day03.rs").is_file());
+    }
+
+    #[test]
+    fn nested_year_modules_follow_each_declaration() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("lib.rs");
+        fs::write(
+            &root,
+            "mod events;\naoc_harness::aoc_lib! { years = { 2019 => events::y2019 } }\n",
+        )
+        .unwrap();
+        fs::create_dir_all(temp.path().join("events")).unwrap();
+        fs::write(temp.path().join("events.rs"), "pub mod y2019;\n").unwrap();
+        fs::write(temp.path().join("events/y2019.rs"), "").unwrap();
+
+        let plan = ScaffoldPlan::prepare(
+            temp.path(),
+            &root,
+            &module(&["events", "y2019"]),
+            &[4],
+            None,
+            || Ok(2019),
+        )
+        .unwrap();
+
+        assert_eq!(plan.root, temp.path().join("events/y2019.rs"));
+        assert_eq!(
+            plan.files[0].path,
+            temp.path().join("events/y2019/day04.rs")
+        );
+        assert_eq!(plan.replacement, "mod day04;\n");
+    }
+
+    #[test]
+    fn ambiguous_year_module_layouts_fail_before_writing() {
+        for (declaration, files) in [
+            ("mod y2019 {}", &[][..]),
+            ("#[path = \"old.rs\"] mod y2019;", &["old.rs"][..]),
+            ("#[cfg(feature = \"old\")] mod y2019;", &["y2019.rs"][..]),
+            ("mod y2019;", &["y2019.rs", "y2019/mod.rs"][..]),
+            ("mod y2019;", &[][..]),
+            ("", &["y2019.rs"][..]),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("lib.rs");
+            let original =
+                format!("{declaration}\naoc_harness::aoc_lib! {{ years = {{ 2019 => y2019 }} }}\n");
+            fs::write(&root, &original).unwrap();
+            fs::create_dir_all(temp.path().join("y2019")).unwrap();
+            for file in files {
+                fs::write(temp.path().join(file), "").unwrap();
+            }
+
+            let result =
+                ScaffoldPlan::prepare(temp.path(), &root, &module(&["y2019"]), &[1], None, || {
+                    Ok(2019)
+                });
+
+            assert!(
+                result.err().unwrap().contains("year module `y2019`"),
+                "{declaration} {files:?}"
+            );
+            assert_eq!(fs::read_to_string(&root).unwrap(), original);
+            assert!(!temp.path().join("y2019/day01.rs").exists());
+        }
+    }
+
+    #[test]
+    fn year_modules_gated_by_inner_cfg_fail_before_writing() {
+        for (outer, inner, gated) in [
+            ("", "#![cfg(feature = \"old\")]\n", "events::y2019"),
+            ("#![cfg_attr(test, cfg(any()))]\n", "", "events"),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("lib.rs");
+            fs::write(
+                &root,
+                "mod events;\naoc_harness::aoc_lib! { years = { 2019 => events::y2019 } }\n",
+            )
+            .unwrap();
+            fs::create_dir_all(temp.path().join("events")).unwrap();
+            fs::write(
+                temp.path().join("events.rs"),
+                format!("{outer}pub mod y2019;\n"),
+            )
+            .unwrap();
+            fs::write(temp.path().join("events/y2019.rs"), inner).unwrap();
+
+            let result = ScaffoldPlan::prepare(
+                temp.path(),
+                &root,
+                &module(&["events", "y2019"]),
+                &[1],
+                None,
+                || Ok(2019),
+            );
+
+            let error = result.err().unwrap();
+            assert!(
+                error.contains(&format!("module `{gated}` has inner cfg")),
+                "{error}"
+            );
+            assert!(!temp.path().join("events/y2019/day01.rs").exists());
+        }
     }
 }

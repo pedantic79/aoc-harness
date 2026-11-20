@@ -28,8 +28,13 @@ with `input` or `--download`. They share the user-managed
 `$HOME/.adventofcode.session` raw token file with aoc-cli. Personal input files
 should stay out of Git. `input -d 1` and `input --all` use the selected package's
 `aoc_lib!` year, even when downloading in a later calendar year, without compiling
-unfinished solvers. The former `input --year YEAR` flag has been removed; drop it
-and its value from scripts.
+unfinished solvers.
+
+A crate that registers several events with `aoc_lib! { years = { ... } }` selects
+one with `--year` on `run`, `list`, `bench`, `profile`, `input`, and `generate`.
+Without it, commands use the only registered year or `default_year`, and plain
+`list` shows every year. `--year` must name a registered year, including in
+single-year crates, and requires an `aoc-harness` 0.5.0 or later runtime.
 
 Inputs are saved to `input/{year}/day{day}.txt` beside the solution package's
 `Cargo.toml`. Set `input-dir` in that manifest to keep them elsewhere, for
@@ -47,7 +52,9 @@ runtimes keep reading `input/` even though the CLI downloads to the configured
 directory.
 
 `cargo aoc-harness generate -d 2` creates `src/day02.rs` and adds `mod day02;`
-before `aoc_lib!` in `src/lib.rs`. New module names use two-digit day numbers,
+before `aoc_lib!` in `src/lib.rs`. In a multi-year crate, `generate --year 2019`
+writes the day beside the year's module (`src/y2019/mod.rs` or `src/y2019.rs`)
+and declares it there. New module names use two-digit day numbers,
 unless the library root already declares only unpadded single-digit modules
 such as `mod day4;`. Days whose declaration and file already match are skipped;
 an undeclared day file or a mismatched declaration stops generation before
@@ -55,7 +62,7 @@ anything is written. Add `--dry-run` to preview the changes.
 
 Save a UTF-8 starter module at `templates/day.rs` in your solution package.
 `cargo aoc-harness generate -d 4` picks it up automatically, replacing `@DAY@`
-with `4` and `@YEAR@` with the year from that package's `aoc_lib!`.
+with `4` and `@YEAR@` with the selected year from that package's `aoc_lib!`.
 Use `let raw = aoc_harness::input!(@DAY@);` in a template's regression test
 to read that day's local puzzle input as a `String`.
 
@@ -99,7 +106,9 @@ measurements and `--baseline NAME` to compare without replacing them. Missing
 workload references fail with instructions to save them. Choose one baseline
 operation per measured run; neither can be combined with `--smoke`. Names are
 single directory components excluding `base`, `new`, `change`, `report`, and `profile`.
-Use `bench --help` for options.
+Reports go to `<target-dir>/criterion/<package>/`; a crate that registers several
+years uses a `<year>/` subdirectory, so each year keeps its own reports and
+baselines. The summary names the event year. Use `bench --help` for options.
 
 `cargo aoc-harness profile --day 4 --part 2` records an end-to-end workload with
 Samply for approximately 10 seconds. Profiling shares the benchmark command's
@@ -110,7 +119,8 @@ directory containing recordings organized by workload name. Override
 `--duration` or `--profiler` as needed. Supported backends are Samply and Flamegraph
 wherever those tools run, Linux `perf`, and macOS `xctrace`. Install the profiler
 separately. Debug symbols are enabled automatically; recordings are saved under
-the target directory or at a new `--output` path. Use `profile --help` for options.
+`<target-dir>/aoc-harness/profiles/<package>/` (with a `<year>/` subdirectory in a
+multi-year crate) or at a new `--output` path, used as given. Use `profile --help` for options.
 
 See the [repository documentation](https://github.com/pedantic79/aoc-harness).
 Licensed under MIT OR Apache-2.0.

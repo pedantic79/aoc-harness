@@ -161,8 +161,9 @@ and library source before credentials or downloads are attempted. `--all` uses
 that event's released days; omitting `--day` selects today's day only during that
 event's December release window. Keep personal inputs out of Git.
 
-The former `input --year YEAR` flag has been removed. Migrate scripts by dropping
-that flag and its value, for example `cargo aoc-harness input --all`.
+`--year YEAR` selects one of the years that `aoc_lib!` registers; it never
+relabels another year's inputs. In a single-year crate it must match the declared
+year. See [Multiple event years](#multiple-event-years).
 
 Zero-padded input names such as `day01.txt` also work; `day1.txt` takes precedence
 when both exist. The harness removes trailing `\n` characters before parsing and
@@ -209,7 +210,7 @@ cargo aoc-harness list
 
 `cargo aoc-harness run` runs the latest registered day by default.
 `cargo aoc-harness` is a shortcut for `run`, with the same flags and selection
-rules.
+rules. Human-readable and JSON reports name the event year.
 
 `run` and `bench` build in release mode by default; `list` shows every registered
 day and marks default implementations. As you add days, use `--day 1,3` or repeat
@@ -308,8 +309,8 @@ fn part1(input: &str) -> usize {
 }
 ```
 
-`@DAY@` expands to the unpadded day number. `@YEAR@` expands to the event year
-declared by the selected package's `aoc_lib!`. The CLI replaces both wherever
+`@DAY@` expands to the unpadded day number. `@YEAR@` expands to the selected
+event year from the package's `aoc_lib!`. The CLI replaces both wherever
 they appear, including comments and strings. Write ordinary Rust braces directly.
 
 With `aoc_lib! { year = 2025 }`, running `cargo aoc-harness generate --day 3,4`
@@ -398,8 +399,10 @@ cargo aoc-harness bench --day 1 --smoke
 validate it, without statistical measurement or Criterion reports. A solver
 selected in both `solver` and `end-to-end` runs once per workload; `full-run`
 executes one complete pass through the selected default implementations.
-Measured reports go to `<target-dir>/criterion/<your-package>/`; `--open` opens
-the HTML report after a successful run.
+Measured reports go to `<target-dir>/criterion/<your-package>/`, or to
+`<target-dir>/criterion/<your-package>/<year>/` in a crate that registers
+several years. The summary names the event year, and `--open` opens the HTML
+report after a successful run.
 
 Save a reference measurement, then compare subsequent edits against it:
 
@@ -409,7 +412,8 @@ cargo aoc-harness bench -d 4 -p 2 --baseline before
 ```
 
 Both operations honor day, part, solution, family, and workload filters and use
-the package's Criterion report directory. Saving again replaces only the
+the package's Criterion report directory, which is per year in a multi-year crate,
+so a baseline saved for one year is never compared with another. Saving again replaces only the
 selected workloads' references. Comparisons report Criterion's timing change
 and preserve the named reference. Every selected workload must have a saved
 measurement; otherwise the command fails with the missing name and workload and
@@ -436,8 +440,8 @@ automatically while preserving the selected Cargo profile's optimization.
 
 Use `--profiler flamegraph`, `--profiler perf` on Linux, or `--profiler xctrace`
 on macOS for other recorders, installed separately. Recordings go under
-`<target-dir>/aoc-harness/profiles/<your-package>/`; `--output PATH` selects a new
-output path. With multiple workloads, `PATH` is a new directory containing a
+`<target-dir>/aoc-harness/profiles/<your-package>/`, with a `<year>/` subdirectory
+in a multi-year crate; `--output PATH` selects a new output path, used as given. With multiple workloads, `PATH` is a new directory containing a
 recording for each workload, organized by workload name. The CLI prints how to
 open each recording.
 
@@ -464,6 +468,52 @@ Profiling does not save benchmark baselines or statistical reports. Existing
 recording paths are preserved; choose a new path for each `--output`.
 
 ## Advanced usage
+
+### Multiple event years
+
+One crate can hold several events, each in its own module:
+
+```rust
+mod y2019;
+mod y2025;
+
+aoc_harness::aoc_lib! {
+    years = {
+        2019 => y2019,
+        2025 => y2025,
+    },
+    default_year = 2025,
+}
+```
+
+Each year's `#[aoc]` and `#[aoc_generator]` registrations stay within that
+year, so two years can reuse the same day, part, and function names. Select an
+event with `--year` on `run`, `list`, `bench`, `profile`, `input`, and `generate`:
+
+```sh
+cargo aoc-harness run --year 2019 --day 1
+cargo aoc-harness input --year 2019 --all
+cargo aoc-harness generate --year 2019 --day 2
+```
+
+Without `--year`, commands use the only registered year or `default_year`; with
+several years and no default, they list the registered years and ask for one.
+Plain `list` shows every year, ordered by year, and `list --year` narrows it.
+An unregistered year is rejected before credentials, downloads, or source
+writes. `generate --year 2019` writes `day02.rs` beside the `y2019` module
+(`src/y2019/mod.rs` or `src/y2019.rs`), declares it there, and follows that
+module's padded or unpadded naming. In tests, read another year's input with
+`aoc_harness::input!(2019, 1)`.
+
+Each year keeps its own benchmark reports, baselines, and profiles under a
+`<year>/` subdirectory, so `bench --year 2019 --save-baseline before` and the
+same command for 2025 never overwrite each other, and `--baseline before` only
+finds the selected year's measurements. Benchmark names are unchanged.
+Single-year crates keep their existing paths and saved baselines. An explicit
+profile `--output` path is used as given, so choose a distinct path per year.
+
+`--year` needs an `aoc-harness` runtime of 0.5.0 or later; the CLI asks you to
+upgrade an older runtime instead of passing the flag through.
 
 ### Generator overrides
 

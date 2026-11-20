@@ -112,11 +112,18 @@ fn years_share_identities_and_select_a_default() {
     let tests = consumer.cargo(&["test", "--lib", "--quiet"]);
     let bonus = consumer.cargo(&["test", "--lib", "--quiet", "--features", "bonus"]);
     let listed = success(consumer.cargo(&["run", "--quiet", "--", "list", "--all-days"]));
+    let narrowed = success(consumer.cargo(&["run", "--quiet", "--", "list", "--year", "2025"]));
 
     success(tests);
     success(bonus);
-    assert!(listed.contains("2025 day 2 part 1 [default]"), "{listed}");
-    assert!(!listed.contains("2019"), "{listed}");
+    let newer = listed.find("2025 day 2 part 1 [default]").unwrap();
+    let older = listed.find("2019 day 1 part 1 [default]").unwrap();
+    assert!(older < newer, "{listed}");
+    assert!(
+        narrowed.contains("2025 day 2 part 1 [default]"),
+        "{narrowed}"
+    );
+    assert!(!narrowed.contains("2019"), "{narrowed}");
 
     consumer.write(
         "src/lib.rs",
@@ -124,9 +131,11 @@ fn years_share_identities_and_select_a_default() {
     );
 
     failure(
-        consumer.cargo(&["run", "--quiet", "--", "list"]),
-        "several event years are registered (2019, 2025) and aoc_lib! sets no default_year",
+        consumer.cargo(&["run", "--quiet", "--", "run"]),
+        "several event years are registered (2019, 2025) and aoc_lib! sets no default_year; select one with --year",
     );
+    success(consumer.cargo(&["run", "--quiet", "--", "list"]));
+    success(consumer.cargo(&["run", "--quiet", "--", "list", "--year", "2019"]));
 
     // One mapped year is the default, and input!(day) needs no year.
     consumer.write(

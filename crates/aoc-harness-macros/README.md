@@ -30,6 +30,8 @@ Registration discovery scans direct attributes in the selected library or binary
 module tree. Generated adapters preserve borrowed lifetimes and ownership modes.
 The `year` given to `aoc_lib!` or `aoc_main!` must be a constant `u16`
 expression; registrations are scoped to their event year at compile time.
+`aoc_lib! { years = { 2019 => y2019, 2025 => y2025 }, default_year = 2025 }`
+registers several events in one crate, and `cargo aoc-harness --year` selects one.
 
 See the [repository documentation](https://github.com/pedantic79/aoc-harness).
 Licensed under MIT OR Apache-2.0.
