@@ -16,7 +16,7 @@ project's `Cargo.toml`:
 
 ```toml
 [dependencies]
-aoc-harness = "0.4.1"
+aoc-harness = "0.4.2"
 ```
 
 It provides the runtime and re-exports `aoc`, `aoc_generator`, `aoc_lib`, and
@@ -31,10 +31,27 @@ should stay out of Git. `input -d 1` and `input --all` use the selected package'
 unfinished solvers. The former `input --year YEAR` flag has been removed; drop it
 and its value from scripts.
 
+Inputs are saved to `input/{year}/day{day}.txt` beside the solution package's
+`Cargo.toml`. Set `input-dir` in that manifest to keep them elsewhere, for
+example in a private repository. Relative paths start at the manifest, not the
+invocation directory, and `run`, `bench`, `profile`, and `input!` read from the
+same place:
+
+```toml
+[package.metadata.aoc-harness]
+input-dir = "../advent-of-code-input"
+```
+
+The solution package needs `aoc-harness` 0.4.2 or later for `input-dir`; older
+runtimes keep reading `input/` even though the CLI downloads to the configured
+directory.
+
 `cargo aoc-harness generate -d 2` creates `src/day02.rs` and adds `mod day02;`
-before `aoc_lib!` in `src/lib.rs`. New module names use two-digit day numbers.
-Generation skips existing padded or unpadded day modules. Add `--dry-run` to
-preview the changes.
+before `aoc_lib!` in `src/lib.rs`. New module names use two-digit day numbers,
+unless the library root already declares only unpadded single-digit modules
+such as `mod day4;`. Days whose declaration and file already match are skipped;
+an undeclared day file or a mismatched declaration stops generation before
+anything is written. Add `--dry-run` to preview the changes.
 
 Save a UTF-8 starter module at `templates/day.rs` in your solution package.
 `cargo aoc-harness generate -d 4` picks it up automatically, replacing `@DAY@`

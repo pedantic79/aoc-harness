@@ -332,22 +332,91 @@ fn selector(value: &str, prefix: &str, max: u8) -> Result<u8, String> {
         .ok_or_else(|| format!("expected {prefix} in 1..={max}"))
 }
 
-/// Prefer the unpadded input, falling back only when it is absent.
-/// Permission and decoding failures must never be treated as cache misses.
-pub fn input_path(manifest: &Path, year: u16, day: u8) -> std::io::Result<PathBuf> {
-    let path = manifest.join(format!("input/{year}/day{day}.txt"));
-    match std::fs::symlink_metadata(&path) {
-        Ok(_) => Ok(path),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let padded = path.with_file_name(format!("day{day:02}.txt"));
-            match std::fs::symlink_metadata(&padded) {
-                Ok(_) => Ok(padded),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(path),
-                Err(e) => Err(e),
+/// The directory that holds a solution package's puzzle inputs.
+///
+/// Inputs live under `input/` beside the package's `Cargo.toml` unless the
+/// manifest sets `package.metadata.aoc-harness.input-dir`. Runs, benchmarks,
+/// profiles, `input!`, and CLI downloads all resolve input files through this
+/// type, so reads and writes always agree on one location.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputDir {
+    root: PathBuf,
+}
+
+impl InputDir {
+    /// Read the input directory setting from `manifest_dir/Cargo.toml`.
+    ///
+    /// A relative `input-dir` resolves from `manifest_dir`, never from the
+    /// current directory.
+    pub fn from_manifest_dir(manifest_dir: &Path) -> std::io::Result<Self> {
+        let manifest = manifest_dir.join("Cargo.toml");
+        let text = std::fs::read_to_string(&manifest).map_err(|e| {
+            std::io::Error::new(e.kind(), format!("read {}: {e}", manifest.display()))
+        })?;
+        let invalid =
+            |message: String| std::io::Error::new(std::io::ErrorKind::InvalidData, message);
+        let value: toml::Table = text
+            .parse()
+            .map_err(|e| invalid(format!("parse {}: {e}", manifest.display())))?;
+
+        let setting = value
+            .get("package")
+            .and_then(|package| package.get("metadata"))
+            .and_then(|metadata| metadata.get("aoc-harness"))
+            .and_then(|harness| harness.get("input-dir"));
+        let root = match setting {
+            None => manifest_dir.join("input"),
+            Some(toml::Value::String(path)) if !path.is_empty() => manifest_dir.join(path),
+            Some(_) => {
+                return Err(invalid(format!(
+                    "package.metadata.aoc-harness.input-dir in {} must be a nonempty path string",
+                    manifest.display()
+                )))
             }
-        }
-        Err(e) => Err(e),
+        };
+        Ok(Self { root })
     }
+
+    /// The directory containing one subdirectory per event year.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// The unpadded `{year}/day{day}.txt` path, where downloads are written.
+    pub fn file(&self, year: u16, day: u8) -> PathBuf {
+        self.root
+            .join(year.to_string())
+            .join(format!("day{day}.txt"))
+    }
+
+    /// Prefer the unpadded input, falling back to `day{NN}.txt` only when the
+    /// unpadded file is absent. Returns the unpadded path when neither exists.
+    /// Permission and decoding failures must never be treated as cache misses.
+    pub fn find(&self, year: u16, day: u8) -> std::io::Result<PathBuf> {
+        let path = self.file(year, day);
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let padded = path.with_file_name(format!("day{day:02}.txt"));
+                match std::fs::symlink_metadata(&padded) {
+                    Ok(_) => Ok(padded),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(path),
+                    Err(e) => Err(e),
+                }
+            }
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// Locate a day's input under the default `input/` directory beside
+/// `manifest`, without reading `Cargo.toml`. Use [`InputDir`] to honor the
+/// package's `input-dir` setting.
+pub fn input_path(manifest: &Path, year: u16, day: u8) -> std::io::Result<PathBuf> {
+    InputDir {
+        root: manifest.join("input"),
+    }
+    .find(year, day)
 }
 
 /// Read a day's local puzzle input as a `String` from within a solution crate.
@@ -507,7 +576,8 @@ impl Registry {
 
     /// Read the day's local input using the same filename and newline rules as the runner.
     pub fn read_input(&self, day: u8) -> Result<String, Error> {
-        let path = input_path(Path::new(self.manifest_dir), self.year, day)
+        let path = InputDir::from_manifest_dir(Path::new(self.manifest_dir))
+            .and_then(|inputs| inputs.find(self.year, day))
             .map_err(|e| Error::message(format!("day {day} input path: {e}")))?;
         read_input_file(day, &path)
     }
@@ -1190,5 +1260,122 @@ mod plan_tests {
                 .plan(&options(&["--family", "solver", "--filter", "^generator/"]))
                 .is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod input_dir_tests {
+    use super::*;
+
+    fn package(metadata: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            format!("[package]\nname = 'winter'\nversion = '0.1.0'\n{metadata}"),
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn root_defaults_to_input_beside_the_manifest_and_honors_overrides() {
+        let default = package("");
+        let relative = package("[package.metadata.aoc-harness]\ninput-dir = '../shared inputs'\n");
+        let absolute = tempfile::tempdir().unwrap();
+        let pinned = package(&format!(
+            "[package.metadata.aoc-harness]\ninput-dir = {}\n",
+            toml::Value::String(absolute.path().to_str().unwrap().into())
+        ));
+
+        let default_dir = InputDir::from_manifest_dir(default.path()).unwrap();
+        let relative_dir = InputDir::from_manifest_dir(relative.path()).unwrap();
+        let pinned_dir = InputDir::from_manifest_dir(pinned.path()).unwrap();
+
+        assert_eq!(default_dir.root(), default.path().join("input"));
+        assert_eq!(
+            default_dir.file(2025, 3),
+            default.path().join("input/2025/day3.txt")
+        );
+        assert_eq!(
+            relative_dir.root(),
+            relative.path().join("../shared inputs")
+        );
+        assert_eq!(pinned_dir.root(), absolute.path());
+    }
+
+    #[test]
+    fn invalid_or_missing_manifests_are_errors() {
+        let missing = tempfile::tempdir().unwrap();
+        let cases = [
+            "[package.metadata.aoc-harness]\ninput-dir = ''\n",
+            "[package.metadata.aoc-harness]\ninput-dir = 7\n",
+            "[package.metadata.aoc-harness]\ninput-dir = ['a']\n",
+        ];
+
+        let error = InputDir::from_manifest_dir(missing.path()).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(error.to_string().contains("Cargo.toml"));
+        for metadata in cases {
+            let dir = package(metadata);
+
+            let error = InputDir::from_manifest_dir(dir.path()).unwrap_err();
+
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{metadata}");
+            assert!(error.to_string().contains("input-dir"), "{metadata}");
+        }
+    }
+
+    #[test]
+    fn lookup_prefers_unpadded_then_padded_names_under_the_configured_root() {
+        let dir = package("[package.metadata.aoc-harness]\ninput-dir = 'puzzles'\n");
+        let year = dir.path().join("puzzles/2025");
+        std::fs::create_dir_all(&year).unwrap();
+        std::fs::write(year.join("day01.txt"), "padded").unwrap();
+        std::fs::write(year.join("day2.txt"), "unpadded").unwrap();
+        std::fs::write(year.join("day02.txt"), "ignored").unwrap();
+        let inputs = InputDir::from_manifest_dir(dir.path()).unwrap();
+
+        let padded = inputs.find(2025, 1).unwrap();
+        let unpadded = inputs.find(2025, 2).unwrap();
+        let absent = inputs.find(2025, 3).unwrap();
+
+        assert_eq!(padded, year.join("day01.txt"));
+        assert_eq!(unpadded, year.join("day2.txt"));
+        assert_eq!(absent, year.join("day3.txt"));
+    }
+
+    #[test]
+    fn input_path_keeps_the_default_layout_without_a_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let year = dir.path().join("input/2025");
+        std::fs::create_dir_all(&year).unwrap();
+        std::fs::write(year.join("day01.txt"), "padded").unwrap();
+
+        let path = input_path(dir.path(), 2025, 1).unwrap();
+
+        assert_eq!(path, year.join("day01.txt"));
+    }
+
+    #[test]
+    fn registry_reads_inputs_from_the_configured_root() {
+        let dir = package("[package.metadata.aoc-harness]\ninput-dir = 'puzzles'\n");
+        let year = dir.path().join("puzzles/2025");
+        std::fs::create_dir_all(&year).unwrap();
+        std::fs::write(year.join("day4.txt"), "configured\n\n").unwrap();
+        std::fs::create_dir_all(dir.path().join("input/2025")).unwrap();
+        std::fs::write(dir.path().join("input/2025/day4.txt"), "default").unwrap();
+        let manifest_dir: &'static str =
+            Box::leak(dir.path().to_str().unwrap().to_owned().into_boxed_str());
+        let registry = Registry {
+            year: 2025,
+            manifest_dir,
+            solutions: &[],
+            generators: &[],
+        };
+
+        let raw = registry.read_input(4).unwrap();
+
+        assert_eq!(raw, "configured");
     }
 }

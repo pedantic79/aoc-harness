@@ -300,9 +300,10 @@ fn execute(request: command::Request) -> Result<i32, String> {
     if action == Action::Input {
         let year = source_year::resolve(&project, &options)?;
         let (year, days) = calendar::select(year, &days, all, chrono::Utc::now())?;
+        let inputs = project.input_dir()?;
 
         input::acquire(
-            &project.manifest_dir,
+            &inputs,
             year,
             &days,
             options.offline,
@@ -340,8 +341,9 @@ fn execute(request: command::Request) -> Result<i32, String> {
                 Box::new(io::stdout())
             };
             calendar::validate(year, &required, chrono::Utc::now())?;
+            let inputs = project.input_dir()?;
             input::acquire_to(
-                &project.manifest_dir,
+                &inputs,
                 year,
                 &required,
                 options.offline,

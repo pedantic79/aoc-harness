@@ -78,7 +78,7 @@ dependencies = [
 
 [[package]]
 name = "aoc-harness"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "aoc-harness-macros",
  "clap",
@@ -86,11 +86,12 @@ dependencies = [
  "regex",
  "serde_json",
  "tempfile",
+ "toml",
 ]
 
 [[package]]
 name = "aoc-harness-cli"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "aoc-harness",
  "chrono",
