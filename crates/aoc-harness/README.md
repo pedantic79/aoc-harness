@@ -65,12 +65,35 @@ stderr. Plain `run` keeps the human-readable report.
 `cargo aoc-harness input -d 1` and `input --all` use the event year declared in
 `aoc_lib!`, including constant expressions, without compiling unfinished solvers.
 
-A crate that maps several events with `aoc_lib! { years = { 2019 => y2019,
-2025 => y2025 }, default_year = 2025 }` selects one with `--year` on `run`,
-`list`, `bench`, `profile`, `input`, and `generate`. Without it, commands use
-the only registered year or `default_year`, and plain `list` shows every year.
-Each year keeps its own Criterion reports, baselines, and profiles in a `<year>/`
-subdirectory; single-year crates keep their existing paths.
+One crate can hold several events. Put each year's day modules under its own
+module, such as `src/y2019/mod.rs`, and map them at the crate root:
+
+```rust,ignore
+pub mod common;
+
+mod y2019;
+mod y2025;
+
+aoc_harness::aoc_lib! {
+    years = {
+        2019 => y2019,
+        2025 => y2025,
+    },
+    default_year = 2025,
+}
+```
+
+Annotations inside each year module are unchanged, and registrations stay
+within their year, so two years can reuse the same day, part, and function
+names. The keys and `default_year` are integer literals. Select an event with
+`--year` on `run`, `list`, `bench`, `profile`, `input`, and `generate`. Without
+it, commands use the only registered year or `default_year`, and plain `list`
+shows every year. In tests, use `input!(2019, 1)`: `input!(day)` is a compile
+error in a crate that registers several years. Each year keeps its own Criterion
+reports, baselines, and profiles in a `<year>/` subdirectory; single-year crates
+keep their existing paths. The
+[migration guide](https://github.com/pedantic79/aoc-harness/blob/main/docs/multi-year-migration.md)
+covers combining per-year crates into one.
 
 `cargo aoc-harness bench` benchmarks solvers by default. Select any combination
 of `generator`, `solver`, `end-to-end`, and `full-run` with `--family`, for example

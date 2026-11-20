@@ -30,11 +30,21 @@ should stay out of Git. `input -d 1` and `input --all` use the selected package'
 `aoc_lib!` year, even when downloading in a later calendar year, without compiling
 unfinished solvers.
 
-A crate that registers several events with `aoc_lib! { years = { ... } }` selects
-one with `--year` on `run`, `list`, `bench`, `profile`, `input`, and `generate`.
-Without it, commands use the only registered year or `default_year`, and plain
-`list` shows every year. `--year` must name a registered year, including in
-single-year crates, and requires an `aoc-harness` 0.5.0 or later runtime.
+A crate that registers several events with `aoc_lib! { years = { 2019 => y2019,
+2025 => y2025 }, default_year = 2025 }` selects one with `--year` on `run`
+(including plain `cargo aoc-harness`), `list`, `bench`, `profile`, `input`, and
+`generate`. Without it, commands use the only registered year or `default_year`;
+with several years and no default, they list the registered years and ask for
+one. The wall clock never picks the year. Plain `list` shows every year, and
+`list --year` narrows it. `--year` must name a registered year, including in
+single-year crates, where it must match the declared year. An unknown year is
+rejected before credentials are read, inputs are downloaded, or source files
+are written. `--year` requires an `aoc-harness` 0.5.0 or later runtime; the CLI
+asks you to upgrade an older one. `input --year 2019 --all` downloads only
+that event's released days. The
+[migration guide](https://github.com/pedantic79/aoc-harness/blob/main/docs/multi-year-migration.md)
+covers combining per-year crates, including an `add-day` recipe that takes a
+year.
 
 Inputs are saved to `input/{year}/day{day}.txt` beside the solution package's
 `Cargo.toml`. Set `input-dir` in that manifest to keep them elsewhere, for
@@ -53,10 +63,10 @@ directory.
 
 `cargo aoc-harness generate -d 2` creates `src/day02.rs` and adds `mod day02;`
 before `aoc_lib!` in `src/lib.rs`. In a multi-year crate, `generate --year 2019`
-writes the day beside the year's module (`src/y2019/mod.rs` or `src/y2019.rs`)
-and declares it there. New module names use two-digit day numbers,
-unless the library root already declares only unpadded single-digit modules
-such as `mod day4;`. Days whose declaration and file already match are skipped;
+writes `src/y2019/day02.rs` and declares it in the year's module
+(`src/y2019/mod.rs` or `src/y2019.rs`). New module names use two-digit day
+numbers, unless the library root, or the year's module in a multi-year crate,
+already declares only unpadded single-digit modules such as `mod day4;`. Days whose declaration and file already match are skipped;
 an undeclared day file or a mismatched declaration stops generation before
 anything is written. Add `--dry-run` to preview the changes.
 
@@ -64,7 +74,9 @@ Save a UTF-8 starter module at `templates/day.rs` in your solution package.
 `cargo aoc-harness generate -d 4` picks it up automatically, replacing `@DAY@`
 with `4` and `@YEAR@` with the selected year from that package's `aoc_lib!`.
 Use `let raw = aoc_harness::input!(@DAY@);` in a template's regression test
-to read that day's local puzzle input as a `String`.
+to read that day's local puzzle input as a `String`. In a multi-year crate,
+use `aoc_harness::input!(@YEAR@, @DAY@)`; the single-argument form doesn't
+compile there.
 
 To use a different default, set `day-template` in the solution package's
 `Cargo.toml`. Relative paths start at that manifest.
