@@ -503,7 +503,7 @@ fn installed_library_workflow() {
 
     assert!(output.starts_with("Benchmark results\n\n"));
     assert!(output.contains("time:"));
-    assert!(output.contains("Benchmark reports:"));
+    assert!(output.contains("Benchmark reports for 2025:"));
     assert!(output.contains("generator/day1/default"));
     assert!(output.contains("end-to-end/day1/part2/owned"));
     assert!(output.contains("full-run/2025-day-1"));
@@ -545,7 +545,7 @@ fn installed_library_workflow() {
     assert!(output.starts_with("Benchmark results\n\n"));
     assert!(output.contains("\x1b["));
     assert!(output.contains("time:"));
-    assert!(output.contains("Benchmark reports:"));
+    assert!(output.contains("Benchmark reports for 2025:"));
     for family in ["generator/", "end-to-end/", "full-run/"] {
         assert!(!output.contains(family));
     }
@@ -812,7 +812,7 @@ aoc_harness::aoc_lib! { year = 2025 }
     assert!(output.starts_with("Benchmark results\n\n"));
     assert!(output.contains("Benchmark output (incomplete)"));
     assert!(output.contains("consumer output before measurement failure"));
-    assert!(!output.contains("Benchmark reports:"));
+    assert!(!output.contains("Benchmark reports for"));
     assert!(diagnostics.contains("consumer diagnostic before measurement failure"));
     assert!(diagnostics.contains("panicked"));
     assert!(diagnostics.contains("measurement failure"));
@@ -1627,7 +1627,7 @@ fn main() {
         let arguments = fs::read_to_string(&log).unwrap();
 
         assert!(result.contains("Profile recording:"));
-        assert!(!result.contains("Benchmark reports:"));
+        assert!(!result.contains("Benchmark reports for"));
         assert!(output.exists());
         assert!(arguments.contains(consumer.join("alternate input.txt").to_str().unwrap()));
         assert!(arguments.contains("--duration\n1"));
@@ -1702,7 +1702,7 @@ fn main() {
         let output = success(run(&args, ""));
 
         assert!(output.contains("Profile recording:"));
-        assert!(!output.contains("Benchmark reports:"));
+        assert!(!output.contains("Benchmark reports for"));
     }
     assert_eq!(snapshot(&consumer), before);
 
@@ -1740,7 +1740,7 @@ fn main() {
         .map(PathBuf::from)
     );
     assert!(arguments.contains("--profile-workload\nfull-run/2025-day-3-part-1"));
-    assert!(!output.contains("Benchmark reports:"));
+    assert!(!output.contains("Benchmark reports for"));
 
     fs::remove_file(&log).unwrap();
     failure(
@@ -1776,7 +1776,7 @@ fn main() {
     ));
 
     assert_eq!(output.matches("Profile recording:").count(), 2);
-    assert!(!output.contains("Benchmark reports:"));
+    assert!(!output.contains("Benchmark reports for"));
 
     let output = run(&["--day", "3", "--part", "1"], "fail");
 
@@ -2419,6 +2419,72 @@ fn year_selection_runs_lists_downloads_and_generates_one_event() {
     assert!(!fs::read_to_string(consumer.join("src/lib.rs"))
         .unwrap()
         .contains("mod day"));
+}
+
+#[test]
+fn each_year_keeps_its_own_benchmark_reports_and_baselines() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let target = root.join("target");
+    fs::create_dir_all(&target).unwrap();
+    let temp = tempfile::tempdir_in(&target).unwrap();
+    let consumer = temp.path().join("consumer");
+    copy_fixture(
+        &root.join("fixtures/years"),
+        &consumer,
+        &root.join("crates/aoc-harness"),
+    );
+    let cli = env!("CARGO_BIN_EXE_cargo-aoc-harness");
+    let artifacts = temp.path().join("artifacts");
+    let measured = |year: Option<&str>, operation: &str| {
+        let mut args = vec!["bench", "-d", "1", "-p", "1", operation, "before"];
+        if let Some(year) = year {
+            args.extend(["--year", year]);
+        }
+        args.extend([
+            "--sample-size",
+            "10",
+            "--warm-up-time",
+            "0.01",
+            "--measurement-time",
+            "0.02",
+            "--profile",
+            "dev",
+            "--offline",
+            "--target-dir",
+            artifacts.to_str().unwrap(),
+        ]);
+        invoke(cli, &consumer, &args, &target, temp.path())
+    };
+    let reports = artifacts.join("criterion/winter-years");
+    let baseline = |year: &str| {
+        fs::read_dir(reports.join(year))
+            .unwrap()
+            .map(|e| e.unwrap().path().join("before"))
+            .find(|p| p.join("sample.json").is_file())
+    };
+
+    let older = success(measured(Some("2019"), "--save-baseline"));
+    let missing = measured(None, "--baseline");
+
+    assert!(older.contains("Benchmark reports for 2019:"), "{older}");
+    assert!(older.contains("winter-years/2019"), "{older}");
+    assert!(baseline("2019").is_some());
+    assert!(!reports.join("2025").exists());
+    assert!(!reports.join("solver").exists());
+    failure(missing, "--save-baseline before");
+
+    let newer = success(measured(None, "--save-baseline"));
+    let saved = snapshot(&baseline("2025").unwrap());
+    let compared = success(measured(Some("2025"), "--baseline"));
+
+    assert!(newer.contains("Benchmark reports for 2025:"), "{newer}");
+    assert!(compared.contains("change:"), "{compared}");
+    assert_eq!(snapshot(&baseline("2025").unwrap()), saved);
+    success(measured(Some("2019"), "--baseline"));
 }
 
 #[test]

@@ -102,7 +102,9 @@ measurements and `--baseline NAME` to compare without replacing them. Missing
 workload references fail with instructions to save them. Choose one baseline
 operation per measured run; neither can be combined with `--smoke`. Names are
 single directory components excluding `base`, `new`, `change`, `report`, and `profile`.
-Use `bench --help` for options.
+Reports go to `<target-dir>/criterion/<package>/`; a crate that registers several
+years uses a `<year>/` subdirectory, so each year keeps its own reports and
+baselines. The summary names the event year. Use `bench --help` for options.
 
 `cargo aoc-harness profile --day 4 --part 2` records an end-to-end workload with
 Samply for approximately 10 seconds. Profiling shares the benchmark command's
@@ -113,7 +115,8 @@ directory containing recordings organized by workload name. Override
 `--duration` or `--profiler` as needed. Supported backends are Samply and Flamegraph
 wherever those tools run, Linux `perf`, and macOS `xctrace`. Install the profiler
 separately. Debug symbols are enabled automatically; recordings are saved under
-the target directory or at a new `--output` path. Use `profile --help` for options.
+`<target-dir>/aoc-harness/profiles/<package>/` (with a `<year>/` subdirectory in a
+multi-year crate) or at a new `--output` path, used as given. Use `profile --help` for options.
 
 See the [repository documentation](https://github.com/pedantic79/aoc-harness).
 Licensed under MIT OR Apache-2.0.

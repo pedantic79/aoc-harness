@@ -25,6 +25,10 @@ cargo aoc-harness bench -d 4 -p 2 --baseline before
   the existing day, part, solution, family, and workload filters. A name is a
   single directory component within each workload's results. Reject path traversal
   and names that collide with Criterion's working directories.
+- A crate that registers several event years keeps one report directory per
+  year (`criterion/<package>/<year>/`), so baselines with the same name in
+  different years never meet. Single-year crates keep the original directory,
+  and their saved baselines stay valid. Benchmark names are unchanged.
 - Accept one baseline operation per measured run. Combining the flags or using
   either with `--smoke` is a usage error.
 

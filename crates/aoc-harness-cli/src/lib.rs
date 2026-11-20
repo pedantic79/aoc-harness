@@ -243,43 +243,80 @@ fn run_benchmarks(command: &mut Command) -> Result<i32, String> {
     Ok(status.code().unwrap_or(1))
 }
 
-/// Check that the compiled runtime supports `--year` and registers `year`,
-/// before any input download, profiling, or execution.
-fn require_year(executable: &std::path::Path, year: u16) -> Result<(), String> {
-    let upgrade = || {
-        "--year requires an aoc-harness runtime with years-v1 support; upgrade the consumer's aoc-harness runtime".to_owned()
-    };
+/// The event years a compiled runtime registers, from its capabilities.
+struct RuntimeYears {
+    years: Vec<u16>,
+    default_year: Option<u16>,
+}
 
-    let output = Command::new(executable)
-        .args(["__describe", "--protocol", "1", "--capabilities"])
-        .output()
-        .map_err(|e| format!("describe compiled runtime: {e}"))?;
-    if !output.status.success() {
-        return Err(upgrade());
-    }
-    let description: serde_json::Value =
-        serde_json::from_slice(&output.stdout).map_err(|_| upgrade())?;
-    if !description["capabilities"]
-        .as_array()
-        .is_some_and(|c| c.iter().any(|v| v == "years-v1"))
-    {
-        return Err(upgrade());
+impl RuntimeYears {
+    /// Describe the runtime's years, or `None` when it predates `years-v1`.
+    fn describe(executable: &std::path::Path) -> Result<Option<Self>, String> {
+        let output = Command::new(executable)
+            .args(["__describe", "--protocol", "1", "--capabilities"])
+            .output()
+            .map_err(|e| format!("describe compiled runtime: {e}"))?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+
+        let Ok(description) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+            return Ok(None);
+        };
+        if !description["capabilities"]
+            .as_array()
+            .is_some_and(|c| c.iter().any(|v| v == "years-v1"))
+        {
+            return Ok(None);
+        }
+
+        let year = |value: &serde_json::Value| value.as_u64().and_then(|v| u16::try_from(v).ok());
+        let Some(years) = description["years"]
+            .as_array()
+            .and_then(|years| years.iter().map(year).collect::<Option<Vec<_>>>())
+        else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            years,
+            default_year: year(&description["default_year"]),
+        }))
     }
 
-    let years: Vec<u64> = description["years"]
-        .as_array()
-        .ok_or_else(upgrade)?
-        .iter()
-        .map(|v| v.as_u64().ok_or_else(upgrade))
-        .collect::<Result<_, _>>()?;
-    if years.contains(&u64::from(year)) {
-        return Ok(());
+    /// Check that `--year` names a registered year, before any input
+    /// download, profiling, or execution.
+    fn require(this: Option<&Self>, year: u16) -> Result<(), String> {
+        let Some(runtime) = this else {
+            return Err("--year requires an aoc-harness runtime with years-v1 support; upgrade the consumer's aoc-harness runtime".into());
+        };
+        if runtime.years.contains(&year) {
+            return Ok(());
+        }
+
+        let years: Vec<_> = runtime.years.iter().map(u16::to_string).collect();
+        Err(format!(
+            "event year {year} is not registered; registered years: {}",
+            years.join(", ")
+        ))
     }
-    let years: Vec<_> = years.iter().map(u64::to_string).collect();
-    Err(format!(
-        "event year {year} is not registered; registered years: {}",
-        years.join(", ")
-    ))
+
+    /// The year that names benchmark and profiling directories. Only a crate
+    /// that registers several years scopes them, so single-year paths and
+    /// their saved baselines stay where they were. `None` also covers an
+    /// ambiguous selection, which the runtime rejects before writing anything.
+    fn artifact_year(this: Option<&Self>, requested: Option<u16>) -> Option<u16> {
+        let runtime = this.filter(|runtime| runtime.years.len() > 1)?;
+
+        requested.or(runtime.default_year)
+    }
+}
+
+/// `base`, or `base/<year>` when artifacts are scoped by year.
+fn year_scoped(base: std::path::PathBuf, year: Option<u16>) -> std::path::PathBuf {
+    match year {
+        Some(year) => base.join(year.to_string()),
+        None => base,
+    }
 }
 
 fn execute(request: command::Request) -> Result<i32, String> {
@@ -358,9 +395,16 @@ fn execute(request: command::Request) -> Result<i32, String> {
     }
 
     let executable = build_bridge(&options, &project)?;
+    let scoped = matches!(action, Action::Bench | Action::Profile);
+    let runtime_years = if year.is_some() || scoped {
+        RuntimeYears::describe(&executable)?
+    } else {
+        None
+    };
     if let Some(year) = year {
-        require_year(&executable, year)?;
+        RuntimeYears::require(runtime_years.as_ref(), year)?;
     }
+    let artifact_year = RuntimeYears::artifact_year(runtime_years.as_ref(), year);
     let mut profile_workloads = Vec::new();
     if download || profiling.is_some() {
         let description = Command::new(&executable)
@@ -411,17 +455,23 @@ fn execute(request: command::Request) -> Result<i32, String> {
             return Ok(validation.code().unwrap_or(1));
         }
 
-        let root = project
-            .target_dir
-            .join("aoc-harness/profiles")
-            .join(&project.package_name);
+        let root = year_scoped(
+            project
+                .target_dir
+                .join("aoc-harness/profiles")
+                .join(&project.package_name),
+            artifact_year,
+        );
         return backend.record(profiling, &root, &executable, &runtime, &profile_workloads);
     }
 
-    let report_dir = project
-        .target_dir
-        .join("criterion")
-        .join(&project.package_name);
+    let report_dir = year_scoped(
+        project
+            .target_dir
+            .join("criterion")
+            .join(&project.package_name),
+        artifact_year,
+    );
     let color = color_enabled(
         options.color,
         io::stdout().is_terminal(),
@@ -477,6 +527,53 @@ pub fn main_entry() -> i32 {
 mod tests {
     use super::*;
     use std::ffi::OsString;
+
+    #[test]
+    fn artifacts_are_scoped_by_the_selected_year_only_in_multi_year_runtimes() {
+        let multi = RuntimeYears {
+            years: vec![2019, 2025],
+            default_year: Some(2025),
+        };
+        let ambiguous = RuntimeYears {
+            years: vec![2019, 2025],
+            default_year: None,
+        };
+        let single = RuntimeYears {
+            years: vec![2025],
+            default_year: Some(2025),
+        };
+        let base = std::path::PathBuf::from("target/criterion/package");
+
+        let requested = RuntimeYears::artifact_year(Some(&multi), Some(2019));
+        let default = RuntimeYears::artifact_year(Some(&multi), None);
+
+        assert_eq!(requested, Some(2019));
+        assert_eq!(default, Some(2025));
+        assert_eq!(RuntimeYears::artifact_year(Some(&ambiguous), None), None);
+        assert_eq!(RuntimeYears::artifact_year(Some(&single), Some(2025)), None);
+        assert_eq!(RuntimeYears::artifact_year(None, None), None);
+        assert_eq!(year_scoped(base.clone(), requested), base.join("2019"));
+        assert_eq!(year_scoped(base.clone(), None), base);
+    }
+
+    #[test]
+    fn year_requirements_name_registered_years_or_ask_for_an_upgrade() {
+        let runtime = RuntimeYears {
+            years: vec![2019, 2025],
+            default_year: None,
+        };
+
+        let registered = RuntimeYears::require(Some(&runtime), 2019);
+        let unknown = RuntimeYears::require(Some(&runtime), 2018).unwrap_err();
+        let legacy = RuntimeYears::require(None, 2019).unwrap_err();
+
+        assert!(registered.is_ok());
+        assert_eq!(
+            unknown,
+            "event year 2018 is not registered; registered years: 2019, 2025"
+        );
+        assert!(legacy.contains("upgrade the consumer's aoc-harness runtime"));
+    }
 
     #[test]
     fn benchmark_scores_are_flushed_before_the_next_result() {

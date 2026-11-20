@@ -397,8 +397,10 @@ cargo aoc-harness bench --day 1 --smoke
 validate it, without statistical measurement or Criterion reports. A solver
 selected in both `solver` and `end-to-end` runs once per workload; `full-run`
 executes one complete pass through the selected default implementations.
-Measured reports go to `<target-dir>/criterion/<your-package>/`; `--open` opens
-the HTML report after a successful run.
+Measured reports go to `<target-dir>/criterion/<your-package>/`, or to
+`<target-dir>/criterion/<your-package>/<year>/` in a crate that registers
+several years. The summary names the event year, and `--open` opens the HTML
+report after a successful run.
 
 Save a reference measurement, then compare subsequent edits against it:
 
@@ -408,7 +410,8 @@ cargo aoc-harness bench -d 4 -p 2 --baseline before
 ```
 
 Both operations honor day, part, solution, family, and workload filters and use
-the package's Criterion report directory. Saving again replaces only the
+the package's Criterion report directory, which is per year in a multi-year crate,
+so a baseline saved for one year is never compared with another. Saving again replaces only the
 selected workloads' references. Comparisons report Criterion's timing change
 and preserve the named reference. Every selected workload must have a saved
 measurement; otherwise the command fails with the missing name and workload and
@@ -435,8 +438,8 @@ automatically while preserving the selected Cargo profile's optimization.
 
 Use `--profiler flamegraph`, `--profiler perf` on Linux, or `--profiler xctrace`
 on macOS for other recorders, installed separately. Recordings go under
-`<target-dir>/aoc-harness/profiles/<your-package>/`; `--output PATH` selects a new
-output path. With multiple workloads, `PATH` is a new directory containing a
+`<target-dir>/aoc-harness/profiles/<your-package>/`, with a `<year>/` subdirectory
+in a multi-year crate; `--output PATH` selects a new output path, used as given. With multiple workloads, `PATH` is a new directory containing a
 recording for each workload, organized by workload name. The CLI prints how to
 open each recording.
 
@@ -499,6 +502,13 @@ writes. `generate --year 2019` writes `day02.rs` beside the `y2019` module
 (`src/y2019/mod.rs` or `src/y2019.rs`), declares it there, and follows that
 module's padded or unpadded naming. In tests, read another year's input with
 `aoc_harness::input!(2019, 1)`.
+
+Each year keeps its own benchmark reports, baselines, and profiles under a
+`<year>/` subdirectory, so `bench --year 2019 --save-baseline before` and the
+same command for 2025 never overwrite each other, and `--baseline before` only
+finds the selected year's measurements. Benchmark names are unchanged.
+Single-year crates keep their existing paths and saved baselines. An explicit
+profile `--output` path is used as given, so choose a distinct path per year.
 
 `--year` needs an `aoc-harness` runtime of 0.5.0 or later; the CLI asks you to
 upgrade an older runtime instead of passing the flag through.
