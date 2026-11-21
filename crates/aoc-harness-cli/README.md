@@ -67,7 +67,7 @@ same place:
 input-dir = "../advent-of-code-input"
 ```
 
-The solution package needs `aoc-harness` 0.4.2 or later for `input-dir`; older
+The solution package needs `aoc-harness` 0.5.0 or later for `input-dir`; older
 runtimes keep reading `input/` even though the CLI downloads to the configured
 directory.
 
