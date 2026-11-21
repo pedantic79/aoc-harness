@@ -58,7 +58,7 @@ input-dir = "../advent-of-code-input"
 ```
 
 The runner, benchmarks, `input!`, and CLI downloads all use this directory.
-The setting requires `aoc-harness` 0.4.2 or later; older runtimes read `input/`.
+The setting requires `aoc-harness` 0.5.0 or later; older runtimes read `input/`.
 
 Select multiple days with `--day 1,3` or `--day 1 --day 3`; `-d` is the short form
 of `--day`. Select a part with `--part 1` or `-p 1`. Use `--all-days` to select
