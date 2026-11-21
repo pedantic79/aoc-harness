@@ -15,3 +15,13 @@ fn part2(raw: &[u8]) -> usize {
 fn fast(raw: &str) -> usize {
     raw.len()
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn day_input_reads_this_modules_year() {
+        let raw = aoc_harness::input!(1);
+
+        assert_eq!(raw, "alpha\nbeta");
+    }
+}

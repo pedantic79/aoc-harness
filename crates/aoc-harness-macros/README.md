@@ -17,7 +17,7 @@ macros:
 
 ```toml
 [dependencies]
-aoc-harness = "0.5.0"
+aoc-harness = "0.5.1"
 ```
 
 Import the macros through `aoc_harness` in your solution code:

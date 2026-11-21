@@ -50,4 +50,11 @@ mod tests {
 
         assert_eq!(raw, "12\n14\n1969");
     }
+
+    #[test]
+    fn day_input_reads_this_modules_year() {
+        let raw = aoc_harness::input!(1);
+
+        assert_eq!(raw, "12\n14\n1969");
+    }
 }

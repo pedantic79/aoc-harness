@@ -194,7 +194,7 @@ fn invalid_mappings_and_registrations_are_compile_errors() {
         (
             library("years = { 2019 => y2019, 2025 => y2025 }, default_year = 2025")
                 + "pub fn read() -> String { aoc_harness::input!(1) }\n",
-            "use input!(year, day)",
+            "input!(day) is outside every module mapped by aoc_lib! years; call it inside a year module or use input!(year, day)",
         ),
         (
             "#[aoc_harness::aoc(day1, part1)]\nfn part1(raw: &str) -> usize { raw.len() }\n\

@@ -17,7 +17,7 @@ runtime and re-exports `aoc`, `aoc_generator`, `aoc_lib`, and `aoc_main` from
 
 ```toml
 [dependencies]
-aoc-harness = "0.5.0"
+aoc-harness = "0.5.1"
 ```
 
 ```rust,ignore
@@ -43,10 +43,11 @@ standalone binary with `aoc_harness::aoc_main! { year = 2025 }`. `year` takes a
 constant `u16` expression, such as `2025` or a `const EVENT_YEAR`.
 
 In a solution module's regression test, `let raw = aoc_harness::input!(2);`
-reads day 2's local input for the declared event year. It returns a `String`
-ready to pass to `parse(&raw)`, with the same filename lookup and trailing
-newline removal as the runner. `input!(2025, 2)` names the year explicitly; it
-must be a year the crate declares. A missing or unreadable input fails the test.
+reads day 2's local input for the calling module's event year. It returns a
+`String` ready to pass to `parse(&raw)`, with the same filename lookup and
+trailing newline removal as the runner. `input!(2025, 2)` names the year
+explicitly; it must be a year the crate declares. A missing or unreadable input
+fails the test.
 
 Inputs live in `input/{year}/day{day}.txt` beside your package's `Cargo.toml`.
 To keep them elsewhere, set a directory in that manifest. Relative paths start
@@ -94,8 +95,9 @@ within their year, so two years can reuse the same day, part, and function
 names. The keys and `default_year` are integer literals. Select an event with
 `--year` on `run`, `list`, `bench`, `profile`, `input`, and `generate`. Without
 it, commands use the only registered year or `default_year`, and plain `list`
-shows every year. In tests, use `input!(2019, 1)`: `input!(day)` is a compile
-error in a crate that registers several years. Each year keeps its own Criterion
+shows every year. In tests, `input!(day)` reads the year of the module that
+calls it (`aoc-harness` 0.5.1 or later); outside every mapped module it is a
+compile error, so use `input!(2019, 1)` there. Each year keeps its own Criterion
 reports, baselines, and profiles in a `<year>/` subdirectory; single-year crates
 keep their existing paths. The
 [migration guide](https://github.com/pedantic79/aoc-harness/blob/main/docs/multi-year-migration.md)

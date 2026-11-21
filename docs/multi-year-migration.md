@@ -50,7 +50,7 @@ and by the common crate. Drop the dependency on `advent-of-code-common` itself.
 
 ```toml
 [dependencies]
-aoc-harness = "0.5.0"
+aoc-harness = "0.5.1"
 ```
 
 If you want to keep each repository's history, commit the new crate, then import
@@ -145,26 +145,25 @@ instead. Relative paths start at the solution package's `Cargo.toml`:
 input-dir = "../advent-of-code-input"
 ```
 
-## 6. Name the year in regression tests
+## 6. Check regression tests
 
-`input!(day)` reads the crate's only year, so it no longer compiles in a crate
-that registers several. Name the year instead:
+With `aoc-harness` 0.5.1 or later, `input!(day)` reads the year of the module
+that calls it, so tests moved into `src/y2019/` keep reading 2019's input
+unchanged. Only calls outside every mapped module, such as tests at the crate
+root, fail to compile; name the year there:
 
 ```rust
 let raw = aoc_harness::input!(2019, 1);
 ```
 
-For one year's directory at a time:
+With `aoc-harness` 0.5.0, `input!(day)` doesn't compile in a crate that
+registers several years. Upgrade the runtime, or name the year in each call:
 
 ```sh
 grep -rl 'input!(' src/y2019 | xargs sed -i '' -E 's/input!\(([0-9]+)\)/input!(2019, \1)/g'
 ```
 
 On Linux, use `sed -i -E` without the empty `''` argument.
-
-The compiler reports every remaining `input!(day)`. A custom day template with
-`input!(@DAY@)` should become `input!(@YEAR@, @DAY@)`, which works in single-year
-and multi-year crates.
 
 ## 7. Check every year
 

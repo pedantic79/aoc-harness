@@ -45,7 +45,7 @@ macros through `aoc_harness` in your solution code.
 
 ```toml
 [dependencies]
-aoc-harness = "0.5.0"
+aoc-harness = "0.5.1"
 ```
 
 Replace `src/lib.rs` with your day modules and event year:
@@ -319,13 +319,13 @@ creates modules with puzzle links ending in `/2025/day/3` and `/2025/day/4`.
 
 In a regression test, pass the day to `aoc_harness::input!`. For day 2,
 `generate` writes `aoc_harness::input!(2)`. When the test runs, the macro
-reads the downloaded input for the crate's event year and returns a `String`
-with trailing `\n` characters removed, just as the runner does. It looks for
-`day2.txt` first and then `day02.txt`, in the package's `input-dir` when one is
-set. To name the event year explicitly, use `aoc_harness::input!(2025, 2)`; the
-year must be one the crate declares. A crate that registers
-[several years](#multiple-event-years) requires the explicit form, so a template
-shared between projects can use `aoc_harness::input!(@YEAR@, @DAY@)`.
+reads the downloaded input for the calling module's event year and returns a
+`String` with trailing `\n` characters removed, just as the runner does. It
+looks for `day2.txt` first and then `day02.txt`, in the package's `input-dir`
+when one is set. In a crate that registers [several years](#multiple-event-years),
+the year comes from the year module containing the call, so a test in
+`src/y2019/day02.rs` reads 2019's input. To name the event year explicitly, use
+`aoc_harness::input!(2025, 2)`; the year must be one the crate declares.
 
 ```rust
 let raw = aoc_harness::input!(@DAY@);
@@ -538,10 +538,12 @@ writes. `generate --year 2019` writes `src/y2019/day02.rs`, declares it in the
 module's padded or unpadded naming. `@YEAR@` in a day template expands to the
 selected year.
 
-In tests, read a year's input with `aoc_harness::input!(2019, 1)`. `input!(1)`
-doesn't compile in a crate that registers several years, because it can't tell
-which year to read; templates should use `input!(@YEAR@, @DAY@)`. Naming a
-year that `years` doesn't register fails the test.
+In tests inside a year module, `aoc_harness::input!(1)` reads that module's
+year, so `input!(1)` in `src/y2019/day01.rs` reads `input/2019/day1.txt`. This
+requires `aoc-harness` 0.5.1 or later. Outside every mapped module, such as a
+test at the crate root, `input!(day)` doesn't compile, even with `default_year`;
+name the year with `aoc_harness::input!(2019, 1)` instead. Naming a year that
+`years` doesn't register fails the test.
 
 Each year keeps its own benchmark reports, baselines, and profiles under a
 `<year>/` subdirectory, so `bench --year 2019 --save-baseline before` and the

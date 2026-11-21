@@ -687,9 +687,13 @@ pub fn input_path(manifest: &Path, year: u16, day: u8) -> std::io::Result<PathBu
 /// Read a day's local puzzle input as a `String` from within a solution crate.
 /// Removes trailing newline (`\n`) characters just as the runner does.
 ///
-/// `input!(day)` uses the year declared by `aoc_lib!` or standalone
-/// `aoc_main!`. In a crate that registers several years, it is a compile
-/// error; name the year with `input!(year, day)`, which works in every crate.
+/// `input!(day)` reads the event year of the module that calls it, the same
+/// year its `#[aoc]` registrations use. In a crate with one year, that is the
+/// year declared by `aoc_lib!` or standalone `aoc_main!`, from any module; with
+/// `years = { 2019 => y2019, 2025 => y2025 }`, a call anywhere below `y2019`
+/// reads 2019. In a crate with several years, a call outside every mapped
+/// module is a compile error, even when `default_year` is set. `input!(year, day)` names the year explicitly and
+/// works anywhere.
 ///
 /// ```ignore
 /// let raw = aoc_harness::input!(2);
@@ -709,12 +713,10 @@ macro_rules! input {
             .unwrap_or_else(|error| ::std::panic!("{error}"))
     };
     ($day:expr $(,)?) => {{
-        const _: () = ::core::assert!(
-            crate::__AOC_SINGLE_YEAR,
-            "input!(day) needs a year in a crate that registers several years; use input!(year, day)"
-        );
-        crate::__aoc_registry()
-            .read_input($day)
+        const YEAR: u16 = crate::__aoc_input_year(::core::module_path!());
+
+        crate::__aoc_events()
+            .read_input(YEAR, $day)
             .unwrap_or_else(|error| ::std::panic!("{error}"))
     }};
 }

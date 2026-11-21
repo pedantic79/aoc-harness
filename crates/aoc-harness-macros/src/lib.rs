@@ -145,13 +145,61 @@ impl Registration {
 /// cannot see the `aoc_lib!` mapping, so the crate root's `__aoc_year_of`
 /// resolves it during const evaluation.
 ///
-/// rust-analyzer expands `module_path!()` to a fixed placeholder. Crates with a
-/// single `year` still resolve because the crate root's mapping matches that
-/// placeholder; in crates with several `years`, rust-analyzer cannot resolve the
-/// year-specific adapters and reports spurious errors at registrations. rustc
-/// is unaffected.
-fn year_of_module() -> Tokens {
-    quote!({ crate::__aoc_year_of(::core::module_path!()) })
+/// rust-analyzer expands `module_path!()` to the same placeholder in every
+/// module, and its proc-macro spans carry no file or line, so a registration
+/// cannot learn its year there. Crates with one year still resolve, because the
+/// crate root's mapping sees the same placeholder. In crates with several
+/// years, the generated code detects the placeholder and uses the
+/// registration's [`source_key`] in place of the year, which `aoc_lib!`
+/// computes identically from its scan. rustc always uses the year.
+fn year_of_module(function: &ItemFn) -> Tokens {
+    let key = source_key(function);
+    quote!({ crate::__aoc_year_of(::core::module_path!(), #key) })
+}
+
+/// A stand-in for the event year where `module_path!()` is unavailable: a
+/// hash of the function's signature and body, which both the attribute and
+/// `aoc_lib!`'s source scan see as the same tokens. Same-named registrations
+/// in different years get different keys unless their code is identical.
+///
+/// The hash walks token trees rather than printed text and skips `;`:
+/// rust-analyzer's attribute input adds a `;` after block statements such as
+/// `while … { … }`, which its parse of the file does not.
+fn source_key(function: &ItemFn) -> Tokens {
+    fn feed(hash: &mut u32, text: &str) {
+        for byte in text.bytes().chain([0]) {
+            *hash = (*hash ^ u32::from(byte)).wrapping_mul(0x0100_0193);
+        }
+    }
+    fn walk(hash: &mut u32, tokens: Tokens) {
+        for token in tokens {
+            match token {
+                proc_macro2::TokenTree::Group(group) => {
+                    let (open, close) = match group.delimiter() {
+                        proc_macro2::Delimiter::Parenthesis => ("(", ")"),
+                        proc_macro2::Delimiter::Brace => ("{", "}"),
+                        proc_macro2::Delimiter::Bracket => ("[", "]"),
+                        proc_macro2::Delimiter::None => ("", ""),
+                    };
+                    feed(hash, open);
+                    walk(hash, group.stream());
+                    feed(hash, close);
+                }
+                proc_macro2::TokenTree::Ident(ident) => feed(hash, &ident.to_string()),
+                proc_macro2::TokenTree::Punct(punct) if punct.as_char() == ';' => {}
+                proc_macro2::TokenTree::Punct(punct) => feed(hash, &punct.as_char().to_string()),
+                proc_macro2::TokenTree::Literal(literal) => feed(hash, &literal.to_string()),
+            }
+        }
+    }
+
+    let sig = &function.sig;
+    let block = &function.block;
+    let mut hash: u32 = 0x811c_9dc5;
+    walk(&mut hash, quote!(#sig #block));
+
+    let key = proc_macro2::Literal::u16_unsuffixed((hash ^ (hash >> 16)) as u16);
+    quote!(#key)
 }
 
 fn argument(function: &ItemFn) -> syn::Result<&Type> {
@@ -320,7 +368,7 @@ pub fn aoc_generator(args: TokenStream, item: TokenStream) -> TokenStream {
         };
         let call = checked(quote!(#name(#input)), fallible, &reg, "generator");
         let label = format!("generator/{}", reg.label());
-        let year = year_of_module();
+        let year = year_of_module(&function);
 
         Ok(quote! {
             #function
@@ -364,7 +412,7 @@ pub fn aoc(args: TokenStream, item: TokenStream) -> TokenStream {
         let name = &function.sig.ident;
         let adapter = reg.adapter(false, name);
         let alias = reg.alias(name);
-        let year = year_of_module();
+        let year = year_of_module(&function);
         let selected = quote!(<crate::#alias<#year> as crate::__aoc_runtime::Select>);
         let argument = invocation(arg, &reg, false, &function.sig.generics)?;
         let call = quote!(#name(::std::hint::black_box(#argument)));
@@ -642,13 +690,23 @@ impl syn::parse::Parse for Entry {
 struct Event {
     /// The year as an expression.
     value: Tokens,
-    /// The year as a const generic argument.
+    /// The year as a const generic argument, before `__aoc_year_arg`.
     argument: Tokens,
     /// The literal year from `years = { ... }`; unknown for `year = EXPR`.
     label: Option<u16>,
     /// Module segments below the crate root; empty for the crate root.
     module: Vec<String>,
     path: Option<syn::Path>,
+}
+
+impl Event {
+    /// The const generic argument naming a registration's adapter types; it
+    /// matches what [`year_of_module`] yields in the registration's module.
+    fn argument(&self, function: &ItemFn) -> Tokens {
+        let year = &self.argument;
+        let key = source_key(function);
+        quote!({ crate::__aoc_year_arg(#year, #key) })
+    }
 }
 
 struct Mapping {
@@ -726,7 +784,7 @@ fn mapping(entry: &Entry, executable: bool) -> syn::Result<Mapping> {
             Ok(Mapping {
                 events: vec![Event {
                     value: quote!(crate::__AOC_YEAR),
-                    argument: quote!({ crate::__AOC_YEAR }),
+                    argument: quote!(crate::__AOC_YEAR),
                     label: None,
                     module: Vec::new(),
                     path: None,
@@ -1075,7 +1133,7 @@ fn expand_entry(input: TokenStream, executable: bool) -> TokenStream {
         let mut generators = vec![Vec::new(); mapping.events.len()];
         for (index, entry) in found.iter().enumerate() {
             let event = years[index];
-            let year = &mapping.events[event].argument;
+            let year = mapping.events[event].argument(&entry.function);
             let reg = &entry.reg;
             let day = reg.day;
             let part = reg.part.unwrap_or(0);
@@ -1128,10 +1186,11 @@ fn expand_entry(input: TokenStream, executable: bool) -> TokenStream {
                 let conditions = &candidate.cfg;
                 let condition = quote!(all(#(#conditions),*));
                 let generator = candidate.reg.adapter(true, &candidate.function.sig.ident);
+                let generator_year = mapping.events[event].argument(&candidate.function);
                 selections.push(quote! {
                     #[cfg(all(#(#cfg,)* #condition, not(any(#(#higher),*))))]
                     impl crate::__aoc_runtime::Select for crate::#alias<#year> {
-                        type Generator = crate::#generator<#year>;
+                        type Generator = crate::#generator<#generator_year>;
                         const HAS: bool = true;
                     }
                 });
@@ -1208,7 +1267,7 @@ fn expand_entry(input: TokenStream, executable: bool) -> TokenStream {
             };
             quote! {
                 if crate::__aoc_runtime::within_module(path, #module) {
-                    return #year;
+                    return ::core::option::Option::Some(#year);
                 }
             }
         });
@@ -1220,6 +1279,13 @@ fn expand_entry(input: TokenStream, executable: bool) -> TokenStream {
             None => quote!(::core::option::Option::None),
         };
         let single = mapping.events.len() == 1;
+        // With one registered year, `input!(day)` reads it from any module.
+        let only = if single {
+            let year = &mapping.events[0].value;
+            quote!(::core::option::Option::Some(#year))
+        } else {
+            quote!(::core::option::Option::None)
+        };
         // A non-constant `year = EXPR` fails here, at the user's expression.
         let constant = mapping.constant.as_ref().map(|year| {
             quote! {
@@ -1240,16 +1306,69 @@ fn expand_entry(input: TokenStream, executable: bool) -> TokenStream {
             pub use ::#runtime as __aoc_runtime;
             #constant
 
+            // Read by `input!(day)` in aoc-harness 0.5.0; later runtimes use `__aoc_input_year`.
             #[doc(hidden)]
             #[allow(dead_code)]
             const __AOC_SINGLE_YEAR: bool = #single;
 
-            /// Maps a registration's `module_path!()` to the event year of its mapped module.
+            /// Maps a `module_path!()` to the event year of its mapped module.
             #[doc(hidden)]
             #[allow(dead_code)]
-            pub(crate) const fn __aoc_year_of(path: &str) -> u16 {
+            pub(crate) const fn __aoc_mapped_year(path: &str) -> ::core::option::Option<u16> {
                 #(#year_of)*
-                ::core::panic!("an #[aoc] or #[aoc_generator] registration is outside every module mapped by aoc_lib! years")
+                ::core::option::Option::None
+            }
+
+            #[doc(hidden)]
+            mod __aoc_module_path_probe {
+                pub(super) const PATH: &str = ::core::module_path!();
+            }
+
+            /// Whether `module_path!()` names the same module everywhere, as
+            /// under rust-analyzer. rustc always reports a child module's path
+            /// as longer than the crate root's. Without module paths, a
+            /// registration cannot tell which of several years it belongs to.
+            #[doc(hidden)]
+            #[allow(dead_code)]
+            const __AOC_MODULE_PATHS_UNAVAILABLE: bool = !__AOC_SINGLE_YEAR
+                && crate::__aoc_runtime::within_module(::core::module_path!(), __aoc_module_path_probe::PATH);
+
+            /// The const generic argument for a registration's adapter types:
+            /// its year, or its source key without module paths.
+            #[doc(hidden)]
+            #[allow(dead_code)]
+            pub(crate) const fn __aoc_year_arg(year: u16, key: u16) -> u16 {
+                if __AOC_MODULE_PATHS_UNAVAILABLE { key } else { year }
+            }
+
+            /// Maps a registration's `module_path!()` to the event year of its
+            /// mapped module, or to its source key without module paths.
+            #[doc(hidden)]
+            #[allow(dead_code)]
+            pub(crate) const fn __aoc_year_of(path: &str, key: u16) -> u16 {
+                if __AOC_MODULE_PATHS_UNAVAILABLE {
+                    return key;
+                }
+
+                match __aoc_mapped_year(path) {
+                    ::core::option::Option::Some(year) => year,
+                    ::core::option::Option::None => ::core::panic!("an #[aoc] or #[aoc_generator] registration is outside every module mapped by aoc_lib! years"),
+                }
+            }
+
+            /// The year `input!(day)` reads: the only registered year, or the
+            /// year of the module containing the call.
+            #[doc(hidden)]
+            #[allow(dead_code)]
+            pub(crate) const fn __aoc_input_year(path: &str) -> u16 {
+                if let ::core::option::Option::Some(year) = #only {
+                    return year;
+                }
+
+                match __aoc_mapped_year(path) {
+                    ::core::option::Option::Some(year) => year,
+                    ::core::option::Option::None => ::core::panic!("input!(day) is outside every module mapped by aoc_lib! years; call it inside a year module or use input!(year, day)"),
+                }
             }
 
             #(#diagnostics)*
@@ -1279,4 +1398,33 @@ fn expand_entry(input: TokenStream, executable: bool) -> TokenStream {
         })
     })();
     result.unwrap_or_else(syn::Error::into_compile_error).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::source_key;
+
+    fn key(source: &str) -> String {
+        let function = syn::parse_str(source).unwrap();
+
+        source_key(&function).to_string()
+    }
+
+    #[test]
+    fn source_key_matches_rust_analyzer_attribute_input() {
+        let parsed = key("fn f(n: u32) -> u32 { let mut s = 0; while s < n { s += 1; } s }");
+        let attribute = key("fn f(n: u32) -> u32 { let mut s = 0; while s < n { s += 1; }; s }");
+        let respaced = key("fn f(n:u32)->u32{let mut s=0;while s<n{s+=1;}s}");
+
+        assert_eq!(parsed, attribute);
+        assert_eq!(parsed, respaced);
+    }
+
+    #[test]
+    fn source_key_separates_same_named_functions() {
+        let older = key("fn part1(raw: &str) -> usize { raw.len() }");
+        let newer = key("fn part1(raw: &str) -> usize { raw.lines().count() }");
+
+        assert_ne!(older, newer);
+    }
 }
