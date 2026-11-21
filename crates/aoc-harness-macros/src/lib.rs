@@ -253,21 +253,42 @@ fn output(function: &ItemFn, reg: &Registration) -> syn::Result<(Type, OutputKin
     Ok(((**ty).clone(), OutputKind::Value))
 }
 
-fn checked(call: Tokens, kind: OutputKind, reg: &Registration, phase: &str) -> Tokens {
+/// Converts a fallible call into a `Result` carrying the runtime error, or
+/// returns `None` when the call produces a plain value.
+fn converted(call: &Tokens, kind: OutputKind, reg: &Registration, phase: &str) -> Option<Tokens> {
     let day = reg.day;
     let part = match reg.part {
         Some(p) => quote!(Some(#p)),
         None => quote!(None),
     };
     let name = reg.name.as_deref().unwrap_or("default");
+
     match kind {
-        OutputKind::Value => call,
-        OutputKind::Result => {
-            quote!(#call.map_err(|error| crate::__aoc_runtime::Error::phase(#day, #part, #name, #phase, error))?)
-        }
-        OutputKind::Option => {
-            quote!(#call.ok_or_else(|| crate::__aoc_runtime::Error::no_value(#day, #part, #name, #phase))?)
-        }
+        OutputKind::Value => None,
+        OutputKind::Result => Some(
+            quote!(#call.map_err(|error| crate::__aoc_runtime::Error::phase(#day, #part, #name, #phase, error))),
+        ),
+        OutputKind::Option => Some(
+            quote!(#call.ok_or_else(|| crate::__aoc_runtime::Error::no_value(#day, #part, #name, #phase))),
+        ),
+    }
+}
+
+/// Evaluates a call to its value. A fallible call's converted `Result` is
+/// followed by `handle`, such as `?` or an unwrap.
+///
+/// Callers never wrap the value back in `Ok`: user-span `Ok(call?)` triggers
+/// `clippy::needless_question_mark` in consumer crates.
+fn checked(
+    call: Tokens,
+    kind: OutputKind,
+    reg: &Registration,
+    phase: &str,
+    handle: Tokens,
+) -> Tokens {
+    match converted(&call, kind, reg, phase) {
+        Some(result) => quote!(#result #handle),
+        None => call,
     }
 }
 
@@ -366,7 +387,9 @@ pub fn aoc_generator(args: TokenStream, item: TokenStream) -> TokenStream {
         } else {
             quote!(raw)
         };
-        let call = checked(quote!(#name(#input)), fallible, &reg, "generator");
+        let call = quote!(#name(#input));
+        let body = converted(&call, fallible, &reg, "generator")
+            .unwrap_or_else(|| quote!(::std::result::Result::Ok(#call)));
         let label = format!("generator/{}", reg.label());
         let year = year_of_module(&function);
 
@@ -377,7 +400,7 @@ pub fn aoc_generator(args: TokenStream, item: TokenStream) -> TokenStream {
             #(#conditions)*
             #[allow(private_interfaces)]
             impl crate::#adapter<#year> {
-                pub(crate) #signature { ::std::result::Result::Ok(#call) }
+                pub(crate) #signature { #body }
 
                 #[doc(hidden)]
                 pub(crate) fn check(raw: &str) -> ::std::result::Result<(), crate::__aoc_runtime::Error> {
@@ -416,16 +439,21 @@ pub fn aoc(args: TokenStream, item: TokenStream) -> TokenStream {
         let selected = quote!(<crate::#alias<#year> as crate::__aoc_runtime::Select>);
         let argument = invocation(arg, &reg, false, &function.sig.generics)?;
         let call = quote!(#name(::std::hint::black_box(#argument)));
-        let solve = checked(call, fallible, &reg, "solver");
-        let timed_solve = quote!((|| -> ::std::result::Result<_, crate::__aoc_runtime::Error> {
-            ::std::result::Result::Ok(#solve)
-        })().map_err(|e| e.timings(generator, start.elapsed()))?);
+        let panic = quote!(.unwrap_or_else(|e| panic!("{e}")));
+        let solve = checked(call.clone(), fallible, &reg, "solver", quote!(?));
+        let timed_solve = checked(
+            call.clone(),
+            fallible,
+            &reg,
+            "solver",
+            quote!(.map_err(|e| e.timings(generator, start.elapsed()))?),
+        );
         let label = reg.label();
         let solver_label = format!("solver/{label}");
         let end_label = format!("end-to-end/{label}");
         let prepare = quote!(<#selected::Generator>::parse(::std::hint::black_box(raw)));
-        let prepare_bench = quote!(#prepare.unwrap_or_else(|e| panic!("{e}")));
-        let solve_bench = quote!((|| -> ::std::result::Result<_, crate::__aoc_runtime::Error> { ::std::result::Result::Ok(#solve) })().unwrap_or_else(|e| panic!("{e}")));
+        let prepare_bench = quote!(#prepare #panic);
+        let solve_bench = checked(call, fallible, &reg, "solver", panic.clone());
 
         let solver_loop = match arg {
             Type::Reference(r) if r.mutability.is_some() || reg.fresh => {
@@ -435,10 +463,11 @@ pub fn aoc(args: TokenStream, item: TokenStream) -> TokenStream {
                     fallible,
                     &reg,
                     "solver",
+                    panic,
                 );
                 quote! {
                     b.iter_batched_ref(|| #prepare_bench, |input| {
-                        ::std::hint::black_box((|| -> ::std::result::Result<_, crate::__aoc_runtime::Error> { ::std::result::Result::Ok(#solve) })().unwrap_or_else(|e| panic!("{e}")))
+                        ::std::hint::black_box(#solve)
                     }, crate::__aoc_runtime::criterion::BatchSize::PerIteration);
                 }
             }

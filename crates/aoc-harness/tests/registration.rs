@@ -250,3 +250,56 @@ fn invalid_mappings_and_registrations_are_compile_errors() {
         "standalone aoc_main! supports one event year",
     );
 }
+
+#[test]
+fn fallible_adapters_pass_clippy() {
+    let consumer = Consumer::new();
+    if !consumer.cargo(&["clippy", "--version"]).status.success() {
+        eprintln!("skipping: cargo clippy is not installed");
+        return;
+    }
+
+    consumer.write(
+        "src/lib.rs",
+        "mod y2024;\naoc_harness::aoc_lib! { years = { 2024 => y2024 } }\n",
+    );
+    consumer.write(
+        "src/y2024/mod.rs",
+        r#"use aoc_harness::{aoc, aoc_generator};
+
+#[aoc_generator(day1)]
+fn optional(raw: &str) -> Option<Vec<usize>> {
+    raw.lines().map(|line| line.parse().ok()).collect()
+}
+
+#[aoc(day1, part1)]
+fn checked(values: &[usize]) -> Result<usize, std::num::TryFromIntError> {
+    u8::try_from(values.len()).map(usize::from)
+}
+
+#[aoc(day1, part2, mutable)]
+fn drained(values: &mut Vec<usize>) -> Option<usize> {
+    values.pop()
+}
+
+#[aoc_generator(day2)]
+fn fallible(raw: &str) -> Result<Vec<usize>, std::num::ParseIntError> {
+    raw.lines().map(str::parse).collect()
+}
+
+#[aoc(day2, part1)]
+fn first(values: &[usize]) -> Option<usize> {
+    values.first().copied()
+}
+"#,
+    );
+
+    success(consumer.cargo(&[
+        "clippy",
+        "--lib",
+        "--quiet",
+        "--",
+        "--deny",
+        "clippy::needless_question_mark",
+    ]));
+}
