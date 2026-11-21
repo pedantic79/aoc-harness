@@ -365,9 +365,8 @@ impl Backend {
 }
 
 pub(crate) fn workloads(description: &[u8]) -> Result<Vec<String>, String> {
-    let invalid = || {
-        "profiling requires an aoc-harness runtime with profiling-v1 support; upgrade the consumer's runtime".to_owned()
-    };
+    let invalid =
+        || "the compiled aoc-harness runtime returned an invalid profiling plan".to_owned();
     let value: serde_json::Value = serde_json::from_slice(description).map_err(|_| invalid())?;
     if !value["capabilities"]
         .as_array()
@@ -488,7 +487,7 @@ mod tests {
             .contains("already exists"));
         assert!(workloads(br#"{"capabilities":["input-plan-v1"]}"#)
             .unwrap_err()
-            .contains("upgrade"));
+            .contains("invalid profiling plan"));
         assert!(workloads(br#"{"capabilities":["profiling-v1"],"profile_workloads":[]}"#).is_err());
         assert_eq!(std::fs::read_to_string(&output).unwrap(), "preserved");
     }

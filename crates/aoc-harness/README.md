@@ -32,6 +32,12 @@ fn part1(lines: &[&str]) -> usize { lines.len() }
 aoc_lib! { year = 2025 }
 ```
 
+The CLI and this runtime are released separately. When a CLI feature needs a
+newer runtime, the CLI names the `aoc-harness` release and the command or
+declaration to update. When the runtime has features the CLI doesn't recognize,
+it suggests `cargo install aoc-harness-cli --locked`. Upgrade the CLI whenever
+you move `aoc-harness` across a 0.x release.
+
 Use `aoc_harness::aoc_main! { lib = your_library }` in a binary, or finish a
 standalone binary with `aoc_harness::aoc_main! { year = 2025 }`. `year` takes a
 constant `u16` expression, such as `2025` or a `const EVENT_YEAR`.

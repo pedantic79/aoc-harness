@@ -184,10 +184,16 @@ pub(crate) fn discover(options: &BuildOptions) -> Result<ConsumerProject, String
     })
 }
 
+/// The compiled bridge and the lockfile its runtime was resolved from.
+pub(crate) struct Bridge {
+    pub executable: PathBuf,
+    pub lockfile: PathBuf,
+}
+
 pub(crate) fn build_bridge(
     options: &BuildOptions,
     project: &ConsumerProject,
-) -> Result<PathBuf, String> {
+) -> Result<Bridge, String> {
     let ConsumerProject {
         package,
         manifest_path,
@@ -363,5 +369,8 @@ pub(crate) fn build_bridge(
     }
     let executable = executable.ok_or("Cargo succeeded without reporting the bridge executable")?;
 
-    Ok(executable)
+    Ok(Bridge {
+        executable,
+        lockfile: bridge_lock,
+    })
 }

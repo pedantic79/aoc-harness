@@ -23,6 +23,16 @@ It provides the runtime and re-exports `aoc`, `aoc_generator`, `aoc_lib`, and
 `aoc_main` from [`aoc-harness-macros`](https://crates.io/crates/aoc-harness-macros).
 Import these macros through `aoc_harness` in your solution code.
 
+The CLI and the runtime are released separately. Before a command uses a
+runtime feature, such as `--year`, `--download`, or profiling, the CLI asks the
+compiled runtime what it supports. If the runtime is too old, the error names
+the first `aoc-harness` release with the feature, your manifest and the version
+it uses, and a fix, such as `cargo add aoc-harness@0.5.0 --manifest-path <path>`
+for a crates.io dependency. If the runtime needs a newer CLI, or supports
+features this CLI doesn't recognize, the CLI asks you to run
+`cargo install aoc-harness-cli --locked`. Upgrade the CLI when you move
+`aoc-harness` across a 0.x release.
+
 Run `cargo aoc-harness --help` for commands. Downloads happen only when requested
 with `input` or `--download`. They share the user-managed
 `$HOME/.adventofcode.session` raw token file with aoc-cli. Personal input files
@@ -39,8 +49,8 @@ one. The wall clock never picks the year. Plain `list` shows every year, and
 `list --year` narrows it. `--year` must name a registered year, including in
 single-year crates, where it must match the declared year. An unknown year is
 rejected before credentials are read, inputs are downloaded, or source files
-are written. `--year` requires an `aoc-harness` 0.5.0 or later runtime; the CLI
-asks you to upgrade an older one. `input --year 2019 --all` downloads only
+are written. `--year` requires an `aoc-harness` 0.5.0 or later runtime; with an
+older one, the CLI names the upgrade. `input --year 2019 --all` downloads only
 that event's released days. The
 [migration guide](https://github.com/pedantic79/aoc-harness/blob/main/docs/multi-year-migration.md)
 covers combining per-year crates, including an `add-day` recipe that takes a
