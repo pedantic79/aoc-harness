@@ -12,6 +12,8 @@ use project::{build_bridge, discover};
 
 mod calendar;
 mod command;
+mod compat;
+use compat::{ProbeError, Runtime, RuntimeYears};
 mod credentials;
 mod input;
 mod profiling;
@@ -243,74 +245,6 @@ fn run_benchmarks(command: &mut Command) -> Result<i32, String> {
     Ok(status.code().unwrap_or(1))
 }
 
-/// The event years a compiled runtime registers, from its capabilities.
-struct RuntimeYears {
-    years: Vec<u16>,
-    default_year: Option<u16>,
-}
-
-impl RuntimeYears {
-    /// Describe the runtime's years, or `None` when it predates `years-v1`.
-    fn describe(executable: &std::path::Path) -> Result<Option<Self>, String> {
-        let output = Command::new(executable)
-            .args(["__describe", "--protocol", "1", "--capabilities"])
-            .output()
-            .map_err(|e| format!("describe compiled runtime: {e}"))?;
-        if !output.status.success() {
-            return Ok(None);
-        }
-
-        let Ok(description) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
-            return Ok(None);
-        };
-        if !description["capabilities"]
-            .as_array()
-            .is_some_and(|c| c.iter().any(|v| v == "years-v1"))
-        {
-            return Ok(None);
-        }
-
-        let year = |value: &serde_json::Value| value.as_u64().and_then(|v| u16::try_from(v).ok());
-        let Some(years) = description["years"]
-            .as_array()
-            .and_then(|years| years.iter().map(year).collect::<Option<Vec<_>>>())
-        else {
-            return Ok(None);
-        };
-        Ok(Some(Self {
-            years,
-            default_year: year(&description["default_year"]),
-        }))
-    }
-
-    /// Check that `--year` names a registered year, before any input
-    /// download, profiling, or execution.
-    fn require(this: Option<&Self>, year: u16) -> Result<(), String> {
-        let Some(runtime) = this else {
-            return Err("--year requires an aoc-harness runtime with years-v1 support; upgrade the consumer's aoc-harness runtime".into());
-        };
-        if runtime.years.contains(&year) {
-            return Ok(());
-        }
-
-        let years: Vec<_> = runtime.years.iter().map(u16::to_string).collect();
-        Err(format!(
-            "event year {year} is not registered; registered years: {}",
-            years.join(", ")
-        ))
-    }
-
-    /// The year that names benchmark and profiling directories. Only a crate
-    /// that registers several years scopes them, so single-year paths and
-    /// their saved baselines stay where they were. `None` also covers an
-    /// ambiguous selection, which the runtime rejects before writing anything.
-    fn artifact_year(this: Option<&Self>, requested: Option<u16>) -> Option<u16> {
-        let runtime = this.filter(|runtime| runtime.years.len() > 1)?;
-
-        requested.or(runtime.default_year)
-    }
-}
-
 /// `base`, or `base/<year>` when artifacts are scoped by year.
 fn year_scoped(base: std::path::PathBuf, year: Option<u16>) -> std::path::PathBuf {
     match year {
@@ -394,32 +328,53 @@ fn execute(request: command::Request) -> Result<i32, String> {
         return Ok(0);
     }
 
-    let executable = build_bridge(&options, &project)?;
+    let bridge = build_bridge(&options, &project)?;
     let scoped = matches!(action, Action::Bench | Action::Profile);
-    let runtime_years = if year.is_some() || scoped {
-        RuntimeYears::describe(&executable)?
-    } else {
-        None
+    let needs_runtime = year.is_some() || scoped || download || profiling.is_some();
+    let compiled = match Runtime::probe(&bridge.executable) {
+        Ok(compiled) => Some(compiled),
+        Err(error) if needs_runtime => return Err(error.to_string()),
+        Err(ProbeError::Protocol(message)) => {
+            eprintln!("warning: {message}");
+            None
+        }
+        Err(ProbeError::Failed(_)) => None,
     };
-    if let Some(year) = year {
-        RuntimeYears::require(runtime_years.as_ref(), year)?;
+
+    if let Some(compiled) = &compiled {
+        if let Some(notice) = compiled.notice() {
+            eprintln!("note: {notice}");
+        }
+        if let Some(year) = year {
+            compiled.require_year(year, &project, &bridge)?;
+        }
+        if download {
+            compiled.require("input-plan-v1", "--download", &project, &bridge)?;
+        }
+        if profiling.is_some() {
+            compiled.require("profiling-v1", "profiling", &project, &bridge)?;
+            compiled.require("input-plan-v1", "profiling", &project, &bridge)?;
+        }
     }
-    let artifact_year = RuntimeYears::artifact_year(runtime_years.as_ref(), year);
+    let artifact_year = RuntimeYears::artifact_year(
+        compiled
+            .as_ref()
+            .and_then(|compiled| compiled.years.as_ref()),
+        year,
+    );
+    let executable = bridge.executable;
     let mut profile_workloads = Vec::new();
     if download || profiling.is_some() {
         let description = Command::new(&executable)
-            .args(["__describe", "--protocol", "1"])
+            .args(["__describe", "--protocol", &compat::PROTOCOL.to_string()])
             .args(&runtime)
             .output()
             .map_err(|e| format!("describe compiled input plan: {e}"))?;
         if !description.status.success() {
-            let diagnostic = String::from_utf8_lossy(&description.stderr);
-            let capability = if profiling.is_some() {
-                "profiling-v1"
-            } else {
-                "input-plan-v1"
-            };
-            return Err(format!("cannot describe compiled plan; this operation requires an aoc-harness runtime with {capability} support (upgrade older consumers). {diagnostic}"));
+            return Err(compat::describe_failure(
+                "cannot describe compiled plan",
+                &description,
+            ));
         }
         let (year, required) =
             input::validate_description(&description.stdout, &project.manifest_dir, action.name())?;
@@ -554,25 +509,6 @@ mod tests {
         assert_eq!(RuntimeYears::artifact_year(None, None), None);
         assert_eq!(year_scoped(base.clone(), requested), base.join("2019"));
         assert_eq!(year_scoped(base.clone(), None), base);
-    }
-
-    #[test]
-    fn year_requirements_name_registered_years_or_ask_for_an_upgrade() {
-        let runtime = RuntimeYears {
-            years: vec![2019, 2025],
-            default_year: None,
-        };
-
-        let registered = RuntimeYears::require(Some(&runtime), 2019);
-        let unknown = RuntimeYears::require(Some(&runtime), 2018).unwrap_err();
-        let legacy = RuntimeYears::require(None, 2019).unwrap_err();
-
-        assert!(registered.is_ok());
-        assert_eq!(
-            unknown,
-            "event year 2018 is not registered; registered years: 2019, 2025"
-        );
-        assert!(legacy.contains("upgrade the consumer's aoc-harness runtime"));
     }
 
     #[test]

@@ -336,10 +336,7 @@ pub(crate) fn validate_description(
     manifest: &Path,
     action: &str,
 ) -> Result<(u16, Vec<u8>), String> {
-    let invalid = || {
-        "invalid or unsupported input-plan protocol; upgrade the consumer's aoc-harness runtime"
-            .to_owned()
-    };
+    let invalid = || "the compiled aoc-harness runtime returned an invalid input plan".to_owned();
     let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| invalid())?;
     if value["protocol"] != 1
         || !value["capabilities"]

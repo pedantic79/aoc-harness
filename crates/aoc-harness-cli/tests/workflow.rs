@@ -1121,7 +1121,7 @@ pub fn __aoc_harness_main() -> i32 {
             "--profile",
             "dev",
         ]),
-        "upgrade older consumers",
+        "cannot describe the compiled aoc-harness runtime (exit status: 2): unrecognized request",
     );
 }
 
@@ -2488,7 +2488,7 @@ fn each_year_keeps_its_own_benchmark_reports_and_baselines() {
 }
 
 #[test]
-fn year_selection_reports_runtimes_without_years_support() {
+fn runtime_mismatches_name_the_side_to_upgrade() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -2497,40 +2497,152 @@ fn year_selection_reports_runtimes_without_years_support() {
     let target = root.join("target");
     fs::create_dir_all(&target).unwrap();
     let temp = tempfile::tempdir_in(&target).unwrap();
+    // Stands in for the published 0.4.1 runtime, so the bridge locks that version.
+    let old_runtime = temp.path().join("old-runtime");
+    fs::create_dir_all(old_runtime.join("src")).unwrap();
+    fs::write(
+        old_runtime.join("Cargo.toml"),
+        "[package]\nname = 'aoc-harness'\nversion = '0.4.1'\nedition = '2021'\n[workspace]\n",
+    )
+    .unwrap();
+    fs::write(old_runtime.join("src/lib.rs"), "").unwrap();
     let consumer = temp.path().join("legacy");
     fs::create_dir_all(consumer.join("src")).unwrap();
     fs::write(
         consumer.join("Cargo.toml"),
-        "[package]\nname = 'legacy'\nversion = '0.1.0'\nedition = '2021'\n[workspace]\n",
+        format!(
+            "[package]\nname = 'legacy'\nversion = '0.1.0'\nedition = '2021'\n[workspace]\n\
+             [dependencies]\naoc-harness = {{ path = {:?} }}\n",
+            old_runtime.to_str().unwrap()
+        ),
     )
     .unwrap();
-    // Mimics a runtime whose argument parser predates --year and --capabilities.
+    // Each mode mimics how one kind of runtime answers describe requests.
     fs::write(
         consumer.join("src/lib.rs"),
-        r#"pub fn __aoc_harness_main() -> i32 {
-    match std::env::args().skip(1).find(|a| a.starts_with("--year") || a == "--capabilities") {
-        Some(arg) => { eprintln!("error: unexpected argument '{arg}' found"); 2 }
-        None => { println!("legacy runtime ran"); 0 }
+        r##"pub fn __aoc_harness_main() -> i32 {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mode = std::env::var("AOC_FAKE_RUNTIME").unwrap();
+    let unknown = args.iter().find(|a| a.starts_with("--year") || *a == "--capabilities");
+    if mode == "legacy" {
+        if let Some(arg) = unknown {
+            eprintln!("error: unexpected argument '{arg}' found");
+            return 2;
+        }
     }
+    if args.first().map(String::as_str) != Some("__describe") {
+        println!("runtime ran: {}", args.join(" "));
+        return 0;
+    }
+
+    match mode.as_str() {
+        "legacy" => println!("{}", r#"{"protocol":1,"capabilities":["input-plan-v1","profiling-v1"],"year":2025}"#),
+        "crash" => panic!("describe crashed"),
+        "malformed" => println!("not a description"),
+        "newer-protocol" => {
+            println!("{}", r#"{"error":"unsupported-protocol","requested":1,"protocols":[2],"runtime_version":"0.9.0","min_cli_version":"0.8.0"}"#);
+            eprintln!("error: this solution uses aoc-harness 0.9.0, which needs aoc-harness-cli 0.8.0 or later");
+            return 1;
+        }
+        "newer-capabilities" => println!("{}", r#"{"protocol":1,"protocols":[1,2],"runtime_version":"0.9.0","capabilities":["input-plan-v1","profiling-v1","years-v1","future-v1"],"years":[2025],"default_year":2025}"#),
+        _ => unreachable!(),
+    }
+    0
 }
-"#,
+"##,
     )
     .unwrap();
     let cli = env!("CARGO_BIN_EXE_cargo-aoc-harness");
-    let run = |args: &[&str]| {
-        let args = [args, &["--profile", "dev"]].concat();
-        invoke(cli, &consumer, &args, &target, temp.path())
+    let run = |mode: &str, args: &[&str]| {
+        Command::new(cli)
+            .current_dir(&consumer)
+            .args(args)
+            .args(["--profile", "dev"])
+            .env("CARGO_TARGET_DIR", &target)
+            .env("CARGO_NET_OFFLINE", "true")
+            .env("AOC_FAKE_RUNTIME", mode)
+            .output()
+            .unwrap()
     };
+    let stderr = |output: &Output| String::from_utf8_lossy(&output.stderr).into_owned();
+    let manifest = consumer.join("Cargo.toml");
 
-    let unchanged = success(run(&["run", "-d", "1"]));
+    // New CLI, old runtime: ordinary commands work, --year names the upgrade.
+    let unchanged = run("legacy", &["run", "-d", "1"]);
+    let benchmark = success(run("legacy", &["bench"]));
 
-    assert!(unchanged.contains("legacy runtime ran"), "{unchanged}");
+    assert!(
+        !stderr(&unchanged).contains("note:"),
+        "{}",
+        stderr(&unchanged)
+    );
+    assert!(success(unchanged).contains("runtime ran: run --day 1"));
+    assert!(
+        benchmark.contains(&format!(
+            "criterion{}legacy --color",
+            std::path::MAIN_SEPARATOR
+        )),
+        "{benchmark}"
+    );
     for action in ["run", "list", "bench"] {
+        let output = run("legacy", &[action, "--year", "2025"]);
+
         failure(
-            run(&[action, "--year", "2025"]),
-            "upgrade the consumer's aoc-harness runtime",
+            output,
+            &format!(
+                "error: --year needs aoc-harness 0.5.0 or later, but {} uses aoc-harness 0.4.1.\n\
+                 Fix: update the aoc-harness source at {} to 0.5.0 or later",
+                manifest.display(),
+                old_runtime.display()
+            ),
         );
     }
+
+    // Failures other than a missing capability never fall back to legacy paths.
+    let crashed = run("crash", &["bench"]);
+    let malformed = run("malformed", &["bench"]);
+
+    assert!(!String::from_utf8_lossy(&crashed.stdout).contains("runtime ran"));
+    failure(crashed, "cannot describe the compiled aoc-harness runtime");
+    failure(malformed, "returned malformed capabilities");
+    success(run("crash", &["run", "-d", "1"]));
+
+    // Old CLI, new runtime: the runtime's protocol rejection names the CLI upgrade.
+    for args in [&["bench"][..], &["run", "--year", "2025"]] {
+        let output = run("newer-protocol", args);
+        let combined = format!(
+            "{}{}",
+            stderr(&output),
+            String::from_utf8_lossy(&output.stdout)
+        );
+
+        assert!(!combined.contains("needs aoc-harness 0."), "{combined}");
+        failure(
+            output,
+            &format!(
+                "error: this solution uses aoc-harness 0.9.0, which needs aoc-harness-cli 0.8.0 \
+                 or later (you have {}).\nFix: cargo install aoc-harness-cli --locked",
+                env!("CARGO_PKG_VERSION")
+            ),
+        );
+    }
+    let warned = run("newer-protocol", &["run", "-d", "1"]);
+
+    assert!(stderr(&warned).contains("warning: this solution uses aoc-harness 0.9.0"));
+    success(warned);
+
+    // A runtime with capabilities this CLI doesn't know suggests a newer CLI.
+    let noticed = run("newer-capabilities", &["run", "-d", "1"]);
+
+    assert!(
+        stderr(&noticed).contains(
+            "note: this solution's aoc-harness 0.9.0 runtime supports features aoc-harness-cli"
+        ),
+        "{}",
+        stderr(&noticed)
+    );
+    assert!(stderr(&noticed).contains("run `cargo install aoc-harness-cli --locked` to upgrade"));
+    assert!(success(noticed).contains("runtime ran: run --day 1"));
 }
 
 #[test]

@@ -549,8 +549,9 @@ finds the selected year's measurements. Benchmark names are unchanged.
 Single-year crates keep their existing paths and saved baselines. An explicit
 profile `--output` path is used as given, so choose a distinct path per year.
 
-`--year` needs an `aoc-harness` runtime of 0.5.0 or later; the CLI asks you to
-upgrade an older runtime instead of passing the flag through. Standalone
+`--year` needs an `aoc-harness` runtime of 0.5.0 or later; with an older
+runtime, the CLI stops before passing the flag through and
+[names the upgrade](#keeping-the-cli-and-runtime-in-sync). Standalone
 binaries using `aoc_main! { year = ... }` support one event year; map several
 years in a library with `aoc_lib!` and run it with `aoc_main! { lib = ... }`.
 
@@ -601,6 +602,26 @@ Or put annotated functions in a standalone binary and finish its crate root
 with `aoc_harness::aoc_main! { year = 2025 }`. Both forms support the runtime's
 run, list, and benchmark commands, for example `cargo run --release -- run`.
 Downloads and external-profiler launching use the Cargo subcommand.
+
+### Keeping the CLI and runtime in sync
+
+`aoc-harness-cli` and your project's `aoc-harness` dependency are released
+separately. Before a command uses a runtime feature, the CLI asks the compiled
+runtime what it supports and says which side to upgrade:
+
+- **Runtime too old.** The error names the feature, the first `aoc-harness`
+  release with it, your manifest, and the version it uses, followed by a fix.
+  For a crates.io dependency, the fix is
+  `cargo add aoc-harness@<version> --manifest-path <path>`, which crosses a
+  breaking 0.x release that `cargo update` won't. For a renamed,
+  workspace-inherited, path, or git dependency, it names the declaration or
+  source to update.
+- **CLI too old.** If the runtime no longer speaks the CLI's protocol, the error
+  names the `aoc-harness-cli` release it needs. If it supports features the CLI
+  doesn't recognize, commands still run and print a note. Either way, run
+  `cargo install aoc-harness-cli --locked` to get the latest CLI.
+
+When you upgrade `aoc-harness` across a 0.x release, upgrade the CLI too.
 
 ## Further documentation
 

@@ -256,14 +256,61 @@ impl Events {
     /// The runtime's capabilities and registered years, without planning.
     pub fn capabilities(&self) -> serde_json::Value {
         serde_json::json!({
-            "protocol": 1, "capabilities": CAPABILITIES,
-            "years": self.years(), "default_year": self.default_year,
+            "protocol": 1, "protocols": PROTOCOLS, "runtime_version": RUNTIME_VERSION,
+            "capabilities": CAPABILITIES, "years": self.years(), "default_year": self.default_year,
         })
     }
 }
 
-/// Features the describe protocol advertises to the CLI.
+/// Features the describe protocol advertises to the CLI. When adding one, add
+/// it with this crate's next release to the CLI's `compat::CAPABILITIES`.
 const CAPABILITIES: [&str; 3] = ["input-plan-v1", "profiling-v1", "years-v1"];
+
+/// Describe protocols this runtime answers, oldest first. Keep an old protocol
+/// while published CLIs still request it.
+const PROTOCOLS: [u32; 1] = [1];
+
+/// The first `aoc-harness-cli` release that speaks `PROTOCOLS[0]`.
+const MIN_CLI_VERSION: &str = "0.1.0";
+
+const RUNTIME_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Explain a describe request for a protocol this runtime doesn't answer: a
+/// structured error for the CLI's stdout and a readable message for stderr.
+/// `None` means the protocol is supported.
+fn unsupported_protocol(
+    requested: Option<&std::ffi::OsStr>,
+) -> Option<(serde_json::Value, String)> {
+    let requested = requested.and_then(|value| value.to_str()?.parse::<u32>().ok());
+    if requested.is_some_and(|protocol| PROTOCOLS.contains(&protocol)) {
+        return None;
+    }
+
+    let supported: Vec<_> = PROTOCOLS.iter().map(u32::to_string).collect();
+    let supported = supported.join(", ");
+    let message = match requested {
+        Some(protocol) if protocol < PROTOCOLS[0] => format!(
+            "this solution uses aoc-harness {RUNTIME_VERSION}, which needs aoc-harness-cli \
+             {MIN_CLI_VERSION} or later (describe protocol {supported}).\n\
+             Fix: cargo install aoc-harness-cli --locked"
+        ),
+        Some(protocol) => format!(
+            "aoc-harness-cli requested describe protocol {protocol}, but this solution uses \
+             aoc-harness {RUNTIME_VERSION}, which supports describe protocol {supported}; \
+             upgrade the solution's aoc-harness dependency"
+        ),
+        None => format!(
+            "__describe needs --protocol <N>; aoc-harness {RUNTIME_VERSION} supports \
+             describe protocol {supported}"
+        ),
+    };
+    let error = serde_json::json!({
+        "error": "unsupported-protocol", "requested": requested, "protocols": PROTOCOLS,
+        "runtime_version": RUNTIME_VERSION, "min_cli_version": MIN_CLI_VERSION,
+    });
+
+    Some((error, message))
+}
 
 /// Chooses the generator for one solution in one event year. `aoc_lib!`
 /// implements it for each solution's year-specific input marker.
@@ -976,7 +1023,8 @@ impl Registry {
             |s: &&Solution| serde_json::json!({"day": s.day, "part": s.part, "name": s.name});
 
         Ok(serde_json::json!({
-            "protocol": 1, "capabilities": CAPABILITIES, "year": self.year, "years": [self.year],
+            "protocol": 1, "protocols": PROTOCOLS, "runtime_version": RUNTIME_VERSION,
+            "capabilities": CAPABILITIES, "year": self.year, "years": [self.year],
             "manifest_dir": self.manifest_dir, "action": match options.action {
                 Action::Run => "run", Action::Bench => "bench", Action::List => "list", Action::Profile => "profile",
             },
@@ -1171,10 +1219,13 @@ impl Registry {
 pub fn entry(events: Events) -> i32 {
     let mut args: Vec<_> = std::env::args_os().collect();
     if args.get(1).is_some_and(|arg| arg == "__describe") {
-        if args.get(2).is_none_or(|arg| arg != "--protocol")
-            || args.get(3).is_none_or(|arg| arg != "1")
-        {
-            eprintln!("error: unsupported describe protocol; expected --protocol 1");
+        let requested = args
+            .get(2)
+            .filter(|arg| *arg == "--protocol")
+            .and(args.get(3));
+        if let Some((error, message)) = unsupported_protocol(requested.map(|arg| arg.as_os_str())) {
+            println!("{error}");
+            eprintln!("error: {message}");
             return 1;
         }
         args.drain(1..4);
@@ -1639,6 +1690,34 @@ mod events_tests {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("years-v1")));
+        for description in [&older, &capabilities] {
+            assert_eq!(description["runtime_version"], env!("CARGO_PKG_VERSION"));
+            assert_eq!(description["protocols"], serde_json::json!([1]));
+        }
+    }
+
+    #[test]
+    fn unsupported_protocols_explain_which_side_to_upgrade() {
+        let protocol = |value: &str| unsupported_protocol(Some(std::ffi::OsStr::new(value)));
+
+        let older_cli = protocol("0").unwrap();
+        let newer_cli = protocol("2").unwrap();
+        let missing = unsupported_protocol(None).unwrap();
+
+        assert!(protocol("1").is_none());
+        assert_eq!(older_cli.0["error"], "unsupported-protocol");
+        assert_eq!(older_cli.0["requested"], 0);
+        assert_eq!(older_cli.0["protocols"], serde_json::json!([1]));
+        assert_eq!(older_cli.0["runtime_version"], env!("CARGO_PKG_VERSION"));
+        assert!(older_cli.1.contains("needs aoc-harness-cli 0.1.0 or later"));
+        assert!(older_cli
+            .1
+            .contains("Fix: cargo install aoc-harness-cli --locked"));
+        assert!(newer_cli
+            .1
+            .contains("upgrade the solution's aoc-harness dependency"));
+        assert_eq!(missing.0["requested"], serde_json::Value::Null);
+        assert!(missing.1.contains("needs --protocol"));
     }
 
     #[test]
