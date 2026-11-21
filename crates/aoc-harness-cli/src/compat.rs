@@ -59,8 +59,8 @@ impl Runtime {
     ///
     /// Runtimes before `years-v1` (`aoc-harness` 0.4 and older) reject
     /// `--capabilities` but still describe plans, and a plan lists the
-    /// runtime's capabilities. Only such a plan, lacking `years-v1`, counts as
-    /// an older runtime; any other failure is an error.
+    /// runtime's capabilities. Only a protocol 1 `list` plan lacking
+    /// `years-v1` counts as an older runtime; any other failure is an error.
     pub fn probe(executable: &Path) -> Result<Self, ProbeError> {
         let capabilities = describe(executable, "--capabilities")?;
         if capabilities.status.success() {
@@ -79,11 +79,14 @@ impl Runtime {
             return Err(ProbeError::Protocol(message));
         }
 
+        let listed = serde_json::from_slice::<Value>(&plan.stdout)
+            .is_ok_and(|plan| plan["protocol"] == PROTOCOL && plan["action"] == "list");
+
         plan.status
             .success()
             .then(|| parse(&plan.stdout))
             .flatten()
-            .filter(|runtime| !runtime.has("years-v1"))
+            .filter(|runtime| listed && !runtime.has("years-v1"))
             .ok_or_else(|| {
                 ProbeError::Failed(failure(
                     "cannot describe the compiled aoc-harness runtime",
@@ -251,32 +254,32 @@ fn rejection(output: &Output) -> Option<String> {
         return None;
     }
 
-    // A runtime that only speaks newer protocols needs a newer CLI.
-    if let Some(error) = &structured {
-        let oldest = error["protocols"]
-            .as_array()
-            .and_then(|p| p.iter().filter_map(Value::as_u64).min());
-        let runtime = error["runtime_version"].as_str();
-        let cli = error["min_cli_version"].as_str();
-        if let (Some(oldest), Some(runtime), Some(cli)) = (oldest, runtime, cli) {
-            if oldest > PROTOCOL {
-                return Some(format!(
-                    "this solution uses aoc-harness {runtime}, which needs aoc-harness-cli \
-                     {cli} or later (you have {CLI_VERSION}).\nFix: {UPGRADE_CLI}"
-                ));
-            }
-        }
-    }
-
+    // The runtime's own message comes first; it knows what changed.
     let message = diagnostic.strip_prefix("error: ").unwrap_or(diagnostic);
-    if message.is_empty() {
+    if !message.is_empty() {
         return Some(format!(
-            "the compiled aoc-harness runtime doesn't support describe protocol {PROTOCOL}, \
-             which aoc-harness-cli {CLI_VERSION} speaks"
+            "{message}\nYou have aoc-harness-cli {CLI_VERSION}, which speaks describe protocol {PROTOCOL}."
         ));
     }
+
+    // Without one, a runtime that only speaks newer protocols needs a newer CLI.
+    let error = structured?;
+    let oldest = error["protocols"]
+        .as_array()
+        .and_then(|p| p.iter().filter_map(Value::as_u64).min());
+    let runtime = error["runtime_version"].as_str();
+    let cli = error["min_cli_version"].as_str();
+    if let (Some(oldest), Some(runtime), Some(cli)) = (oldest, runtime, cli) {
+        if oldest > PROTOCOL {
+            return Some(format!(
+                "this solution uses aoc-harness {runtime}, which needs aoc-harness-cli \
+                 {cli} or later (you have {CLI_VERSION}).\nFix: {UPGRADE_CLI}"
+            ));
+        }
+    }
     Some(format!(
-        "{message}\n(aoc-harness-cli {CLI_VERSION} speaks describe protocol {PROTOCOL}.)"
+        "the compiled aoc-harness runtime doesn't support describe protocol {PROTOCOL}, \
+         which aoc-harness-cli {CLI_VERSION} speaks"
     ))
 }
 
@@ -329,7 +332,7 @@ fn upgrade_runtime(project: &ConsumerProject, needed: &str) -> String {
 
     if inherits_from_workspace(&project.manifest_path, key) {
         return format!(
-            "set `{key}` in [workspace.dependencies] of {} to version \"{needed}\"",
+            "update `{key}` in [workspace.dependencies] of {} to aoc-harness {needed} or later",
             project.workspace_root.join("Cargo.toml").display()
         );
     }
@@ -432,8 +435,8 @@ mod tests {
         let cases = [
             (plain, registry(serde_json::json!({})), format!("cargo add aoc-harness@0.5.0 --manifest-path {manifest}")),
             ("[dependencies]\nharness = { package = \"aoc-harness\", version = \"0.4\" }\n", registry(serde_json::json!({ "rename": "harness" })), format!("set the `harness` dependency in {manifest} to version \"0.5.0\"")),
-            ("[dependencies]\naoc-harness.workspace = true\n", registry(serde_json::json!({})), format!("set `aoc-harness` in [workspace.dependencies] of {manifest} to version \"0.5.0\"")),
-            ("[target.'cfg(unix)'.dependencies]\nharness = { workspace = true }\n", registry(serde_json::json!({ "rename": "harness" })), format!("set `harness` in [workspace.dependencies] of {manifest} to version \"0.5.0\"")),
+            ("[dependencies]\naoc-harness.workspace = true\n", registry(serde_json::json!({})), format!("update `aoc-harness` in [workspace.dependencies] of {manifest} to aoc-harness 0.5.0 or later")),
+            ("[target.'cfg(unix)'.dependencies]\nharness = { workspace = true }\n", registry(serde_json::json!({ "rename": "harness" })), format!("update `harness` in [workspace.dependencies] of {manifest} to aoc-harness 0.5.0 or later")),
             (plain, registry(serde_json::json!({ "source": null, "path": "/src/aoc-harness" })), "update the aoc-harness source at /src/aoc-harness to 0.5.0 or later".into()),
             (plain, registry(serde_json::json!({ "source": "git+https://example.com/aoc-harness" })), format!("point the `aoc-harness` git dependency in {manifest} at a revision with aoc-harness 0.5.0 or later")),
             (plain, registry(serde_json::json!({ "kind": "dev" })), format!("depend on aoc-harness 0.5.0 or later in {manifest}")),
@@ -556,11 +559,13 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn protocol_rejections_explain_which_side_to_upgrade() {
+        let structured = r#"{"error":"unsupported-protocol","requested":1,"protocols":[2],"runtime_version":"0.9.0","min_cli_version":"0.8.0"}"#;
         let newer_runtime = output(
             1,
-            r#"{"error":"unsupported-protocol","requested":1,"protocols":[2],"runtime_version":"0.9.0","min_cli_version":"0.8.0"}"#,
-            "error: this solution uses aoc-harness 0.9.0, which needs aoc-harness-cli 0.8.0 or later",
+            structured,
+            "error: this solution uses aoc-harness 0.9.0, which needs aoc-harness-cli 0.8.0 or later.\nFix: see the release notes\n",
         );
+        let silent_runtime = output(1, structured, "");
         let unstructured = output(
             1,
             "",
@@ -569,11 +574,20 @@ mod tests {
         let crashed = output(101, "", "thread 'main' panicked\n");
 
         let newer = describe_failure("cannot describe plan", &newer_runtime);
+        let silent = describe_failure("cannot describe plan", &silent_runtime);
         let message = describe_failure("cannot describe plan", &unstructured);
         let crash = describe_failure("cannot describe plan", &crashed);
 
         assert_eq!(
             newer,
+            format!(
+                "this solution uses aoc-harness 0.9.0, which needs aoc-harness-cli 0.8.0 or later.\n\
+                 Fix: see the release notes\n\
+                 You have aoc-harness-cli {CLI_VERSION}, which speaks describe protocol 1."
+            )
+        );
+        assert_eq!(
+            silent,
             format!(
                 "this solution uses aoc-harness 0.9.0, which needs aoc-harness-cli 0.8.0 or later \
                  (you have {CLI_VERSION}).\nFix: cargo install aoc-harness-cli --locked"

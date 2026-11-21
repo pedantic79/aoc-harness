@@ -2524,7 +2524,7 @@ fn runtime_mismatches_name_the_side_to_upgrade() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mode = std::env::var("AOC_FAKE_RUNTIME").unwrap();
     let unknown = args.iter().find(|a| a.starts_with("--year") || *a == "--capabilities");
-    if mode == "legacy" {
+    if mode == "legacy" || mode == "unlisted" {
         if let Some(arg) = unknown {
             eprintln!("error: unexpected argument '{arg}' found");
             return 2;
@@ -2536,7 +2536,8 @@ fn runtime_mismatches_name_the_side_to_upgrade() {
     }
 
     match mode.as_str() {
-        "legacy" => println!("{}", r#"{"protocol":1,"capabilities":["input-plan-v1","profiling-v1"],"year":2025}"#),
+        "legacy" => println!("{}", r#"{"protocol":1,"action":"list","capabilities":["input-plan-v1","profiling-v1"],"year":2025}"#),
+        "unlisted" => println!("{}", r#"{"capabilities":[]}"#),
         "crash" => panic!("describe crashed"),
         "malformed" => println!("not a description"),
         "newer-protocol" => {
@@ -2601,10 +2602,12 @@ fn runtime_mismatches_name_the_side_to_upgrade() {
     // Failures other than a missing capability never fall back to legacy paths.
     let crashed = run("crash", &["bench"]);
     let malformed = run("malformed", &["bench"]);
+    let unlisted = run("unlisted", &["bench"]);
 
     assert!(!String::from_utf8_lossy(&crashed.stdout).contains("runtime ran"));
     failure(crashed, "cannot describe the compiled aoc-harness runtime");
     failure(malformed, "returned malformed capabilities");
+    failure(unlisted, "cannot describe the compiled aoc-harness runtime");
     success(run("crash", &["run", "-d", "1"]));
 
     // Old CLI, new runtime: the runtime's protocol rejection names the CLI upgrade.
@@ -2621,7 +2624,7 @@ fn runtime_mismatches_name_the_side_to_upgrade() {
             output,
             &format!(
                 "error: this solution uses aoc-harness 0.9.0, which needs aoc-harness-cli 0.8.0 \
-                 or later (you have {}).\nFix: cargo install aoc-harness-cli --locked",
+                 or later\nYou have aoc-harness-cli {}, which speaks describe protocol 1.",
                 env!("CARGO_PKG_VERSION")
             ),
         );
