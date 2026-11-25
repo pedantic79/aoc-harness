@@ -13,20 +13,40 @@ struct Registration {
     day: u8,
     part: Option<u8>,
     name: Option<String>,
+    /// The generator name a solver selects with `generator = name`, in place of its own name.
+    generator: Option<String>,
     default: bool,
     fresh: bool,
     value_output: bool,
     borrow: bool,
 }
 
+/// One registration argument: `_` in the part position, or an ordinary meta item.
+enum Argument {
+    AnyPart(Token![_]),
+    Meta(Box<Meta>),
+}
+
+impl syn::parse::Parse for Argument {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+        if input.peek(Token![_]) {
+            return Ok(Self::AnyPart(input.parse()?));
+        }
+
+        Ok(Self::Meta(Box::new(input.parse()?)))
+    }
+}
+
 impl Registration {
     fn parse(tokens: Tokens, generator: bool) -> syn::Result<Self> {
         use syn::parse::Parser;
-        let args = Punctuated::<Meta, Token![,]>::parse_terminated.parse2(tokens)?;
+        let args = Punctuated::<Argument, Token![,]>::parse_terminated.parse2(tokens)?;
+        let mut any_part = None;
         let mut reg = Self {
             day: 0,
             part: None,
             name: None,
+            generator: None,
             default: false,
             fresh: false,
             value_output: false,
@@ -34,6 +54,22 @@ impl Registration {
         };
 
         for (index, arg) in args.iter().enumerate() {
+            let arg = match arg {
+                Argument::AnyPart(token) if index == 1 && generator => {
+                    any_part = Some(token);
+                    continue;
+                }
+                Argument::AnyPart(token) => {
+                    let message = if generator {
+                        "`_` stands for any part and must follow the day"
+                    } else {
+                        "solutions need part1 or part2; `_` is only for #[aoc_generator]"
+                    };
+                    return Err(syn::Error::new_spanned(token, message));
+                }
+                Argument::Meta(meta) => &**meta,
+            };
+
             match arg {
                 Meta::Path(path) => {
                     let ident = path
@@ -60,7 +96,7 @@ impl Registration {
                         );
                     } else if value == "default" {
                         reg.default = true;
-                    } else if reg.part.is_some() && reg.name.is_none() {
+                    } else if (reg.part.is_some() || any_part.is_some()) && reg.name.is_none() {
                         reg.name = Some(value);
                     } else {
                         return Err(syn::Error::new_spanned(
@@ -77,6 +113,27 @@ impl Registration {
                         ));
                     }
                     reg.fresh = true;
+                }
+                Meta::NameValue(value) if value.path.is_ident("generator") => {
+                    if generator {
+                        return Err(syn::Error::new_spanned(
+                            value,
+                            "generator = ... is only for #[aoc]; it selects a generator by name",
+                        ));
+                    }
+                    let syn::Expr::Path(path) = &value.value else {
+                        return Err(syn::Error::new_spanned(
+                            &value.value,
+                            "generator must name a generator registration, such as generator = alpha",
+                        ));
+                    };
+                    let ident = path.path.get_ident().ok_or_else(|| {
+                        syn::Error::new_spanned(
+                            path,
+                            "generator must name a generator registration, such as generator = alpha",
+                        )
+                    })?;
+                    reg.generator = Some(ident.to_string());
                 }
                 Meta::NameValue(value) if value.path.is_ident("output") => {
                     if value.value != syn::parse_quote!("value") {
@@ -105,6 +162,13 @@ impl Registration {
                 "expected day, part (for solvers), optional name, optional default",
             ));
         }
+        if let (Some(token), None) = (any_part, &reg.name) {
+            return Err(syn::Error::new_spanned(
+                token,
+                "`_` must be followed by a name, such as (day1, _, sorted); write (day1) for a whole-day generator",
+            ));
+        }
+
         Ok(reg)
     }
 
@@ -342,6 +406,49 @@ fn invocation(
     }
 }
 
+/// Registers a function that parses the puzzle input for solvers.
+///
+/// ```rust,ignore
+/// use aoc_harness::aoc_generator;
+///
+/// #[aoc_generator(day1)]
+/// fn parse(input: &str) -> Result<Vec<u64>, std::num::ParseIntError> {
+///     input.lines().map(str::parse).collect()
+/// }
+/// ```
+///
+/// # Arguments
+///
+/// | Form | Applies to |
+/// | --- | --- |
+/// | `(day1)` | every implementation of day 1 |
+/// | `(day1, part2)` | every part 2 implementation |
+/// | `(day1, part2, sorted)` | the `sorted` implementation of part 2 |
+/// | `(day1, _, sorted)` | the `sorted` implementation of either part |
+///
+/// Add `output = "value"` to treat a returned `Result` or `Option` as the
+/// parsed value instead of unwrapping it.
+///
+/// # Selection
+///
+/// Each [`macro@aoc`] solver uses the most specific matching generator. For
+/// `#[aoc(day1, part2, sorted)]` the order is `(day1, part2, sorted)`, then
+/// `(day1, _, sorted)`, then `(day1, part2)`, then `(day1)`. A named generator
+/// only applies to implementations with that name, or to solvers that select
+/// it with `generator = sorted`. Stack several `#[aoc_generator]` attributes on
+/// one function to register it under several identities.
+///
+/// # Signature
+///
+/// The function takes `&str` or `&[u8]`, the input with trailing newlines
+/// removed, and returns the parsed value, which may borrow from the input. It
+/// may return `Result<T, E>` with `E: std::error::Error`, or `Option<T>`; an
+/// `Err` or `None` stops the run with an error naming the day, part, and
+/// variant. The function stays an ordinary Rust function.
+///
+/// Registrations are found by scanning the crate's module tree from
+/// [`aoc_lib!`] or [`aoc_main!`]; write the attribute directly on the function,
+/// not through `cfg_attr`, another macro, `include!`, or a renamed import.
 #[proc_macro_attribute]
 pub fn aoc_generator(args: TokenStream, item: TokenStream) -> TokenStream {
     let function = parse_macro_input!(item as ItemFn);
@@ -420,6 +527,66 @@ pub fn aoc_generator(args: TokenStream, item: TokenStream) -> TokenStream {
     result.unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
+/// Registers a solver for one day and part.
+///
+/// ```rust,ignore
+/// use aoc_harness::aoc;
+///
+/// #[aoc(day1, part1)]
+/// fn part1(numbers: &[u64]) -> u64 {
+///     numbers.iter().sum()
+/// }
+///
+/// #[aoc(day1, part2, sorted, default)]
+/// fn part2_sorted(numbers: &mut Vec<u64>) -> u64 {
+///     numbers.sort_unstable();
+///     numbers.last().copied().unwrap_or(0)
+/// }
+/// ```
+///
+/// # Arguments
+///
+/// The day and part come first, then the optional name and options in any order.
+///
+/// | Argument | Meaning |
+/// | --- | --- |
+/// | `day1` … `day25` | The puzzle day. Required, first. |
+/// | `part1`, `part2` | The puzzle part. Required, second. |
+/// | `name` | Names an alternative implementation, such as `sorted`. |
+/// | `default` | Makes this implementation the one normal runs use. |
+/// | `generator = name` | Uses the generator registered as `name` instead of this solver's own name. |
+/// | `input = "borrow"` | Passes the generated value through `Borrow`/`BorrowMut` to the argument type. |
+/// | `bench_input = "fresh"` | Regenerates the input for every benchmark iteration of a `&T` solver. |
+/// | `output = "value"` | Treats a returned `Result` or `Option` as the answer instead of unwrapping it. |
+///
+/// Normal runs use the `default` implementation, otherwise the unnamed one,
+/// otherwise the only one registered for the day and part.
+///
+/// # Input
+///
+/// The solver takes one argument from the selected [`macro@aoc_generator`]:
+/// `&T`, `&mut T`, or an owned `T`. Ordinary deref coercions apply, so a
+/// `Vec<T>` can be taken as `&[T]`. Without a generator, a solver taking `&str`
+/// or `&[u8]` receives the input with trailing newlines removed.
+///
+/// The generator is the most specific match: `(day, part, name)`, then
+/// `(day, _, name)`, then `(day, part)`, then `(day)`. With
+/// `generator = alpha`, only `(day, part, alpha)` and `(day, _, alpha)` are
+/// considered and a missing generator is a compile error. Naming another
+/// generator while one is registered under the solver's own name is also a
+/// compile error.
+///
+/// # Output
+///
+/// The answer must implement `Display + 'static`. A return type whose last
+/// path segment is `Result` (with `E: std::error::Error`) or `Option` is
+/// unwrapped; an `Err` or `None` stops the run with an error naming the day,
+/// part, and variant.
+///
+/// The function must be safe, synchronous, and free of type or const
+/// parameters. It stays an ordinary Rust function you can call from tests.
+/// Write the attribute directly on the function; registrations are found by
+/// scanning the crate's module tree from [`aoc_lib!`] or [`aoc_main!`].
 #[proc_macro_attribute]
 pub fn aoc(args: TokenStream, item: TokenStream) -> TokenStream {
     let function = parse_macro_input!(item as ItemFn);
@@ -961,11 +1128,63 @@ fn binary_source(
     Ok(candidates.remove(0))
 }
 
+/// Collects the crate's [`macro@aoc`] and [`macro@aoc_generator`]
+/// registrations into a library the `cargo aoc-harness` CLI can run.
+///
+/// Write it once, at the crate root of the library (usually `src/lib.rs`):
+///
+/// ```rust,ignore
+/// mod day01;
+///
+/// aoc_harness::aoc_lib! { year = 2025 }
+/// ```
+///
+/// `year` must be a constant `u16` expression, such as `2025` or a `const`
+/// item. To register several events in one crate, map each year to a module
+/// below the crate root:
+///
+/// ```rust,ignore
+/// mod y2019;
+/// mod y2025;
+///
+/// aoc_harness::aoc_lib! { years = { 2019 => y2019, 2025 => y2025 }, default_year = 2025 }
+/// ```
+///
+/// Registrations take their year from the mapped module they are in, so years
+/// can reuse days, parts, and names. `cargo aoc-harness --year` selects one;
+/// without it, commands use the only year or `default_year`. With `years`,
+/// every registration must be inside a mapped module.
+///
+/// The macro scans the module tree from the crate root, following `mod`
+/// declarations and `#[path]`, and honors `#[cfg]` on modules and functions.
+/// Duplicate registrations and conflicting defaults are compile errors.
 #[proc_macro]
 pub fn aoc_lib(input: TokenStream) -> TokenStream {
     expand_entry(input, false)
 }
 
+/// Defines `fn main` for running solutions with `cargo run` or the
+/// `cargo aoc-harness` CLI.
+///
+/// Run a library that declares [`aoc_lib!`], from `src/main.rs`:
+///
+/// ```rust,ignore
+/// aoc_harness::aoc_main! { lib = my_solutions }
+/// ```
+///
+/// Or make a standalone binary that registers its own solutions, written at
+/// the binary's crate root:
+///
+/// ```rust,ignore
+/// mod day01;
+///
+/// aoc_harness::aoc_main! { year = 2025 }
+/// ```
+///
+/// A standalone binary supports one event year; map several years with
+/// `aoc_lib!` and run that library with `lib = ...`. If the binary's source
+/// file can't be found from `Cargo.toml`, name it with
+/// `source = "relative/path.rs"`.
 #[proc_macro]
 pub fn aoc_main(input: TokenStream) -> TokenStream {
     expand_entry(input, true)
@@ -1194,22 +1413,52 @@ fn expand_entry(input: TokenStream, executable: bool) -> TokenStream {
             });
 
             // Each solution selects the most specific active generator of its own year.
+            // A name match outranks a part match: (day, part, name), then
+            // (day, _, name), then (day, part), then (day). `generator = name`
+            // replaces the solution's own name and allows only named matches.
             let alias = reg.alias(function);
             markers.insert(alias.to_string(), alias.clone());
+            let applies = |g: &Found, year: usize| {
+                g.generator
+                    && year == event
+                    && g.reg.day == day
+                    && (g.reg.part.is_none() || g.reg.part == reg.part)
+            };
+            let wanted = reg.generator.as_ref().or(reg.name.as_ref());
             let mut candidates: Vec<_> = found
                 .iter()
                 .zip(&years)
                 .filter(|(g, year)| {
-                    g.generator
-                        && **year == event
-                        && g.reg.day == day
-                        && (g.reg.part.is_none() || g.reg.part == reg.part)
-                        && (g.reg.name.is_none() || g.reg.name == reg.name)
+                    applies(g, **year)
+                        && (g.reg.name.as_ref() == wanted
+                            || (g.reg.name.is_none() && reg.generator.is_none()))
                 })
                 .map(|(g, _)| g)
                 .collect();
+
+            // A generator registered under the solution's own name would be
+            // silently bypassed by `generator = other`.
+            if let (Some(wanted), Some(own)) = (&reg.generator, &reg.name) {
+                if wanted != own {
+                    for (shadowed, _) in found
+                        .iter()
+                        .zip(&years)
+                        .filter(|(g, year)| applies(g, **year) && g.reg.name.as_ref() == Some(own))
+                    {
+                        let conditions = cfg.iter().chain(&shadowed.cfg);
+                        let message = format!(
+                            "solution {} names generator = {wanted}, but a generator is registered for {own}; rename one or remove `generator = {wanted}`",
+                            label(index)
+                        );
+                        diagnostics.push(quote! {
+                            #[cfg(all(#(#conditions),*))]
+                            compile_error!(#message);
+                        });
+                    }
+                }
+            }
             candidates
-                .sort_by_key(|g| std::cmp::Reverse((g.reg.part.is_some(), g.reg.name.is_some())));
+                .sort_by_key(|g| std::cmp::Reverse((g.reg.name.is_some(), g.reg.part.is_some())));
             let mut higher = Vec::new();
             for candidate in candidates {
                 let conditions = &candidate.cfg;
@@ -1237,7 +1486,10 @@ fn expand_entry(input: TokenStream, executable: bool) -> TokenStream {
                 },
                 _ => None,
             };
-            let fallback = if reg.borrow {
+            let fallback = if let Some(wanted) = &reg.generator {
+                let error = format!("no generator named {wanted} for {}", label(index));
+                quote!(compile_error!(#error);)
+            } else if reg.borrow {
                 let error = format!(
                     "input = \"borrow\" requires a registered generator for {}",
                     label(index)

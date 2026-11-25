@@ -1333,6 +1333,16 @@ fn adapter_diagnostics_and_measurement_only_none() {
         ("#[aoc_generator(day1)] fn parse(raw: &str) -> String { raw.into() }\n#[aoc(day1, part1, input=\"borrow\")] fn solve(raw: String) -> usize { raw.len() }", "requires a reference argument"),
         ("struct Owner; struct View;\n#[aoc_generator(day1)] fn parse(_: &str) -> Owner { Owner }\n#[aoc(day1, part1, input=\"borrow\")] fn solve(_: &View) -> usize { 0 }", "Borrow<View>"),
         ("#[aoc(day1, part1)] fn solve(_: &str) -> Result<Option<usize>, std::io::Error> { Ok(Some(1)) }", "Display"),
+        ("#[aoc(day1, _, fast)] fn solve(raw: &str) -> usize { raw.len() }", "solutions need part1 or part2"),
+        ("#[aoc_generator(day1, _)] fn parse(raw: &str) -> usize { raw.len() }\n#[aoc(day1, part1)] fn solve(n: &usize) -> usize { *n }", "`_` must be followed by a name"),
+        ("#[aoc_generator(day1, fast)] fn parse(raw: &str) -> usize { raw.len() }\n#[aoc(day1, part1, fast)] fn solve(n: &usize) -> usize { *n }", "unexpected registration argument"),
+        ("#[aoc_generator(day1, _, fast)] fn a(raw: &str) -> usize { raw.len() }\n#[aoc_generator(day1, _, fast)] fn b(raw: &str) -> usize { raw.len() }\n#[aoc(day1, part1, fast)] fn solve(n: &usize) -> usize { *n }", "duplicate generator identity"),
+        // An explicit generator never falls back to a day-level generator or the raw input.
+        ("#[aoc_generator(day1)] fn parse(raw: &str) -> usize { raw.len() }\n#[aoc(day1, part1, fast, generator = alpha)] fn solve(raw: &str) -> usize { raw.len() }", "no generator named alpha for day1/part1/fast"),
+        ("#[aoc_generator(day1, part1, alpha_1)] fn a(raw: &str) -> usize { raw.len() }\n#[aoc_generator(day1, part1, alpha)] fn b(raw: &str) -> usize { raw.len() }\n#[aoc(day1, part1, alpha_1, generator = alpha)] fn solve(n: &usize) -> usize { *n }", "solution day1/part1/alpha_1 names generator = alpha, but a generator is registered for alpha_1"),
+        ("#[aoc_generator(day1, _, alpha_1)] fn a(raw: &str) -> usize { raw.len() }\n#[aoc_generator(day1, part1, alpha)] fn b(raw: &str) -> usize { raw.len() }\n#[aoc(day1, part1, alpha_1, generator = alpha)] fn solve(n: &usize) -> usize { *n }", "but a generator is registered for alpha_1"),
+        ("#[aoc_generator(day1, generator = alpha)] fn parse(raw: &str) -> usize { raw.len() }\n#[aoc(day1, part1)] fn solve(n: &usize) -> usize { *n }", "generator = ... is only for #[aoc]"),
+        ("#[aoc_generator(day1, part1, alpha)] fn parse(raw: &str) -> usize { raw.len() }\n#[aoc(day1, part1, fast, generator = \"alpha\")] fn solve(n: &usize) -> usize { *n }", "generator must name a generator registration"),
     ] {
         fs::write(&source, format!("use aoc_harness::{{aoc,aoc_generator}};\n{functions}\naoc_harness::aoc_lib! {{ year=2025 }}\n")).unwrap();
 

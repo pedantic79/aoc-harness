@@ -563,14 +563,56 @@ into one, follow the [multi-year migration guide](docs/multi-year-migration.md).
 
 ### Generator overrides
 
-Generators can apply to a whole day, one part, or a named implementation.
-The most specific registration wins. These attributes belong on separate
-generator functions:
+Generators can apply to a whole day, one part, a named implementation of one
+part, or a named implementation of either part. The most specific registration
+wins. Each line below is a separate registration. For a solver
+registered as `#[aoc(day1, part2, sorted)]`, the harness tries them in this
+order:
 
 ```rust,ignore
-#[aoc_generator(day1)]
-#[aoc_generator(day1, part2)]
-#[aoc_generator(day1, part2, sorted)]
+#[aoc_generator(day1, part2, sorted)] // part 2's sorted implementation
+#[aoc_generator(day1, _, sorted)]     // the sorted implementation of either part
+#[aoc_generator(day1, part2)]         // every part 2 implementation
+#[aoc_generator(day1)]                // every implementation of the day
+```
+
+A name match outranks a part match. A named generator applies only to
+implementations with that name, so unnamed implementations never use one. `_`
+is for generators only and must be followed by a name, and it needs
+`aoc-harness-macros` 0.3.3 or later; in an existing project, run
+`cargo update -p aoc-harness-macros` to get it. Without a matching
+generator, solvers that take `&str` or `&[u8]` receive the raw input.
+
+To share one generator between implementations with different names, name its
+registration with `generator = ...` on each solver:
+
+```rust,ignore
+#[aoc_generator(day1, part1, alpha)]
+fn alpha(input: &str) -> Alpha { /* ... */ }
+
+#[aoc(day1, part1, alpha_1, generator = alpha)]
+fn part1_alpha_1(input: &Alpha) -> u64 { /* ... */ }
+
+#[aoc(day1, part1, alpha_2, generator = alpha)]
+fn part1_alpha_2(input: &Alpha) -> u64 { /* ... */ }
+```
+
+`generator = alpha` refers to the registration name, not the Rust function name.
+It replaces the solver's own name when choosing a generator and tries
+`(day1, part1, alpha)`, then `(day1, _, alpha)`. It never falls back to an
+unnamed generator or the raw input: without a match, compilation fails.
+Naming the solver's own registration, as in
+`#[aoc(day1, part1, alpha, generator = alpha)]`, requires that generator to
+exist. A solver can't name a different generator while one is registered under
+its own name; compilation fails so the solver's own generator isn't silently
+skipped. `generator = ...` needs `aoc-harness-macros` 0.3.3 or later.
+
+Stacking registrations on one function also shares it:
+
+```rust,ignore
+#[aoc_generator(day1, part1, sorted)]
+#[aoc_generator(day1, part2, heap)]
+fn sorted_numbers(input: &str) -> Vec<u32> { /* ... */ }
 ```
 
 Duplicate registrations and conflicting defaults fail compilation. Several named

@@ -26,6 +26,20 @@ Import the macros through `aoc_harness` in your solution code:
 use aoc_harness::{aoc, aoc_generator, aoc_lib, aoc_main};
 ```
 
+Each solver uses the most specific matching generator. For
+`#[aoc(day1, part2, sorted)]`, the order is `#[aoc_generator(day1, part2, sorted)]`,
+then `#[aoc_generator(day1, _, sorted)]`, then `#[aoc_generator(day1, part2)]`,
+then `#[aoc_generator(day1)]`. The `_` part, accepted since
+`aoc-harness-macros` 0.3.3, applies a named generator to both parts.
+
+To share a generator between implementations with different names, add
+`generator = alpha` to each `#[aoc]`; it names the generator registration, not
+the Rust function. The solver then uses `(day1, part, alpha)` or
+`(day1, _, alpha)` and fails to compile if neither exists, or if a generator is
+also registered under the solver's own name. Stacking several
+`#[aoc_generator]` attributes on one function also shares it. Both need
+`aoc-harness-macros` 0.3.3 or later.
+
 Registration discovery scans direct attributes in the selected library or binary
 module tree. Generated adapters preserve borrowed lifetimes and ownership modes.
 The `year` given to `aoc_lib!` or `aoc_main!` must be a constant `u16`

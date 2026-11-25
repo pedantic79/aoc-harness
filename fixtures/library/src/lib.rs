@@ -197,6 +197,246 @@ mod tests {
         }
     }
 
+    /// Records which generator prepared a solution's input.
+    pub struct Source(&'static str);
+
+    mod generator_ranking {
+        use super::*;
+
+        #[aoc_generator(day24)]
+        fn day(_: &str) -> Source {
+            Source("day")
+        }
+
+        #[aoc_generator(day24, part2)]
+        fn part(_: &str) -> Source {
+            Source("part")
+        }
+
+        #[aoc_generator(day24, _, fast)]
+        fn name(_: &str) -> Source {
+            Source("name")
+        }
+
+        #[aoc_generator(day24, part1, fast)]
+        fn exact(_: &str) -> Source {
+            Source("exact")
+        }
+
+        #[aoc(day24, part1)]
+        fn part1(source: &Source) -> &'static str {
+            source.0
+        }
+
+        #[aoc(day24, part1, fast)]
+        fn part1_fast(source: &Source) -> &'static str {
+            source.0
+        }
+
+        #[aoc(day24, part1, slow)]
+        fn part1_slow(source: &Source) -> &'static str {
+            source.0
+        }
+
+        #[aoc(day24, part2)]
+        fn part2(source: &Source) -> &'static str {
+            source.0
+        }
+
+        #[aoc(day24, part2, fast)]
+        fn part2_fast(source: &Source) -> &'static str {
+            source.0
+        }
+
+        #[aoc(day24, part2, slow)]
+        fn part2_slow(source: &Source) -> &'static str {
+            source.0
+        }
+    }
+
+    mod shared_generator {
+        use super::*;
+
+        #[aoc_generator(day25)]
+        fn day(_: &str) -> Source {
+            Source("day")
+        }
+
+        #[aoc_generator(day25, part1, sorted)]
+        #[aoc_generator(day25, part2, heap)]
+        fn shared(_: &str) -> Source {
+            Source("shared")
+        }
+
+        #[aoc(day25, part1)]
+        fn part1(source: &Source) -> &'static str {
+            source.0
+        }
+
+        #[aoc(day25, part1, sorted)]
+        fn part1_sorted(source: &Source) -> &'static str {
+            source.0
+        }
+
+        #[aoc(day25, part2)]
+        fn part2(source: &Source) -> &'static str {
+            source.0
+        }
+
+        #[aoc(day25, part2, heap)]
+        fn part2_heap(source: &Source) -> &'static str {
+            source.0
+        }
+    }
+
+    mod generator_by_name {
+        use super::*;
+
+        #[aoc_generator(day22)]
+        fn day(_: &str) -> Source {
+            Source("day")
+        }
+
+        #[aoc_generator(day22, part1, alpha)]
+        fn alpha(_: &str) -> Source {
+            Source("alpha")
+        }
+
+        #[aoc_generator(day22, _, beta)]
+        fn beta(_: &str) -> Source {
+            Source("beta")
+        }
+
+        #[aoc(day22, part1)]
+        fn part1(source: &Source) -> &'static str {
+            source.0
+        }
+
+        #[aoc(day22, part1, alpha)]
+        fn part1_alpha(source: &Source) -> &'static str {
+            source.0
+        }
+
+        #[aoc(day22, part1, alpha_1, generator = alpha)]
+        fn part1_alpha_1(source: &Source) -> &'static str {
+            source.0
+        }
+
+        #[aoc(day22, part1, alpha_2, generator = alpha)]
+        fn part1_alpha_2(source: &Source) -> &'static str {
+            source.0
+        }
+
+        #[aoc(day22, part1, strict, generator = beta)]
+        fn part1_strict(source: &Source) -> &'static str {
+            source.0
+        }
+
+        #[aoc(day22, part2, generator = beta)]
+        fn part2(source: &Source) -> &'static str {
+            source.0
+        }
+
+        #[aoc(day22, part2, own, generator = own)]
+        fn part2_own(source: &Source) -> &'static str {
+            source.0
+        }
+
+        #[aoc_generator(day22, part2, own)]
+        fn own(_: &str) -> Source {
+            Source("own")
+        }
+    }
+
+    #[test]
+    fn solutions_select_generators_by_registration_name() {
+        let registry = __aoc_registry();
+        let options = aoc_harness::Options {
+            day: vec![22],
+            ..Default::default()
+        };
+
+        let chosen: Vec<_> = registry
+            .select(&options, true)
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.part, s.name, (s.run)("").unwrap().answer.to_string()))
+            .collect();
+
+        let expected = [
+            (1, "alpha", "alpha"),
+            (1, "alpha_1", "alpha"),
+            (1, "alpha_2", "alpha"),
+            (1, "default", "day"),
+            (1, "strict", "beta"),
+            (2, "default", "beta"),
+            (2, "own", "own"),
+        ];
+        let expected: Vec<_> = expected
+            .into_iter()
+            .map(|(part, name, source)| (part, name, source.to_owned()))
+            .collect();
+        assert_eq!(chosen, expected);
+    }
+
+    #[test]
+    fn stacked_generator_attributes_share_one_function() {
+        let registry = __aoc_registry();
+        let options = aoc_harness::Options {
+            day: vec![25],
+            ..Default::default()
+        };
+
+        let chosen: Vec<_> = registry
+            .select(&options, true)
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.part, s.name, (s.run)("").unwrap().answer.to_string()))
+            .collect();
+
+        let expected = [
+            (1, "default", "day"),
+            (1, "sorted", "shared"),
+            (2, "default", "day"),
+            (2, "heap", "shared"),
+        ];
+        let expected: Vec<_> = expected
+            .into_iter()
+            .map(|(part, name, source)| (part, name, source.to_owned()))
+            .collect();
+        assert_eq!(chosen, expected);
+    }
+
+    #[test]
+    fn generators_rank_name_over_part_over_day() {
+        let registry = __aoc_registry();
+        let options = aoc_harness::Options {
+            day: vec![24],
+            ..Default::default()
+        };
+
+        let chosen: Vec<_> = registry
+            .select(&options, true)
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.part, s.name, (s.run)("").unwrap().answer.to_string()))
+            .collect();
+
+        let expected = [
+            (1, "default", "day"),
+            (1, "fast", "exact"),
+            (1, "slow", "day"),
+            (2, "default", "part"),
+            (2, "fast", "name"),
+            (2, "slow", "part"),
+        ];
+        let expected: Vec<_> = expected
+            .into_iter()
+            .map(|(part, name, source)| (part, name, source.to_owned()))
+            .collect();
+        assert_eq!(chosen, expected);
+    }
+
     #[test]
     fn day_input_uses_the_registered_year_and_removes_the_final_newline() {
         let raw: String = aoc_harness::input!(2);
