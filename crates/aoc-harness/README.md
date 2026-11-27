@@ -17,7 +17,7 @@ runtime and re-exports `aoc`, `aoc_generator`, `aoc_lib`, and `aoc_main` from
 
 ```toml
 [dependencies]
-aoc-harness = "0.5.1"
+aoc-harness = "0.6.0"
 ```
 
 ```rust,ignore
@@ -62,14 +62,15 @@ The runner, benchmarks, `input!`, and CLI downloads all use this directory.
 The setting requires `aoc-harness` 0.5.0 or later; older runtimes read `input/`.
 
 Select multiple days with `--day 1,3` or `--day 1 --day 3`; `-d` is the short form
-of `--day`. Select a part with `--part 1` or `-p 1`. Use `--all-days` to select
-every registered day. `run --all-solutions` compares each part's displayed
-answers exactly, including whitespace, and fails if any variants disagree.
-`run --format json` provides ordered results, string answers, integer nanosecond
-timings, and partial failure or disagreement details; solution output goes to
-stderr. Plain `run` keeps the human-readable report.
+of `--day`. Select a part with `--part 1` or `-p 1`. Use `--day all` to select
+every registered day, and `--year all` to cover every registered year.
+`--solution NAME` selects one variant; `run --solution all` compares each part's
+displayed answers exactly, including whitespace, and fails if any variants
+disagree. `run --format json` provides an overall outcome and one report per
+year with ordered results, string answers, integer nanosecond timings, and
+partial failure or disagreement details; solution output goes to stderr. Plain `run` keeps the human-readable report.
 
-`cargo aoc-harness input -d 1` and `input --all` use the event year declared in
+`cargo aoc-harness input -d 1` and `input --day all` use the event year declared in
 `aoc_lib!`, including constant expressions, without compiling unfinished solvers.
 
 One crate can hold several events. Put each year's day modules under its own
@@ -93,9 +94,10 @@ aoc_harness::aoc_lib! {
 Annotations inside each year module are unchanged, and registrations stay
 within their year, so two years can reuse the same day, part, and function
 names. The keys and `default_year` are integer literals. Select an event with
-`--year` on `run`, `list`, `bench`, `profile`, `input`, and `generate`. Without
-it, commands use the only registered year or `default_year`, and plain `list`
-shows every year. In tests, `input!(day)` reads the year of the module that
+`--year` on `run`, `list`, `bench`, `profile`, `input`, and `generate`, or every
+event with `--year all` on all of them except `generate`. Without it, commands
+use the only registered year or `default_year`, and plain `list` shows every
+year. In tests, `input!(day)` reads the year of the module that
 calls it (`aoc-harness` 0.5.1 or later); outside every mapped module it is a
 compile error, so use `input!(2019, 1)` there. Each year keeps its own Criterion
 reports, baselines, and profiles in a `<year>/` subdirectory; single-year crates

@@ -258,11 +258,12 @@ fn execute(request: command::Request) -> Result<i32, String> {
     let command::Request {
         build: options,
         action,
-        runtime,
+        mut runtime,
         year,
+        all_years,
         days,
+        all_days,
         json,
-        all,
         day_template,
         dry_run,
         download,
@@ -314,23 +315,45 @@ fn execute(request: command::Request) -> Result<i32, String> {
     }
 
     if action == Action::Input {
-        let year = source_year::resolve(&project, &options, year)?;
-        let (year, days) = calendar::select(year, &days, all, chrono::Utc::now())?;
-        let inputs = project.input_dir()?;
+        let years = if all_years {
+            source_year::years(&project, &options)?
+        } else {
+            vec![source_year::resolve(&project, &options, year)?]
+        };
 
-        input::acquire(
-            &inputs,
-            year,
-            &days,
-            options.offline,
-            session_file.as_deref(),
-        )?;
+        // With --year all, skip years where no selected day is available.
+        let now = chrono::Utc::now();
+        let mut selections = Vec::new();
+        let mut skipped = None;
+        for year in years {
+            match calendar::select(year, &days, all_days, now) {
+                Ok(selection) => selections.push(selection),
+                Err(error) if all_years => {
+                    skipped.get_or_insert(format!("{year}: {error}"));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if selections.is_empty() {
+            return Err(skipped.unwrap_or_else(|| "no event year is registered".into()));
+        }
+
+        let inputs = project.input_dir()?;
+        for (year, days) in selections {
+            input::acquire(
+                &inputs,
+                year,
+                &days,
+                options.offline,
+                session_file.as_deref(),
+            )?;
+        }
         return Ok(0);
     }
 
     let bridge = build_bridge(&options, &project)?;
     let scoped = matches!(action, Action::Bench | Action::Profile);
-    let needs_runtime = year.is_some() || scoped || download || profiling.is_some();
+    let needs_runtime = year.is_some() || all_years || scoped || download || profiling.is_some();
     let compiled = match Runtime::probe(&bridge.executable) {
         Ok(compiled) => Some(compiled),
         Err(error) if needs_runtime => return Err(error.to_string()),
@@ -348,6 +371,7 @@ fn execute(request: command::Request) -> Result<i32, String> {
         if let Some(year) = year {
             compiled.require_year(year, &project, &bridge)?;
         }
+        compiled.adapt_selectors(&mut runtime, &project, &bridge)?;
         if download {
             compiled.require("input-plan-v1", "--download", &project, &bridge)?;
         }
@@ -356,15 +380,18 @@ fn execute(request: command::Request) -> Result<i32, String> {
             compiled.require("input-plan-v1", "profiling", &project, &bridge)?;
         }
     }
-    let artifact_year = RuntimeYears::artifact_year(
-        compiled
-            .as_ref()
-            .and_then(|compiled| compiled.years.as_ref()),
-        year,
-    );
+    if compiled.is_none() {
+        compat::lower_selectors(&mut runtime);
+    }
+    let years = compiled
+        .as_ref()
+        .and_then(|compiled| compiled.years.as_ref());
+    let artifact_year = RuntimeYears::artifact_year(years, year);
     let executable = bridge.executable;
-    let mut profile_workloads = Vec::new();
-    if download || profiling.is_some() {
+
+    // Each plan covers one year; --year all describes one plan per year.
+    let mut plans = Vec::new();
+    if download || profiling.is_some() || (all_years && open) {
         let description = Command::new(&executable)
             .args(["__describe", "--protocol", &compat::PROTOCOL.to_string()])
             .args(&runtime)
@@ -376,23 +403,43 @@ fn execute(request: command::Request) -> Result<i32, String> {
                 &description,
             ));
         }
-        let (year, required) =
-            input::validate_description(&description.stdout, &project.manifest_dir, action.name())?;
-        if profiling.is_some() {
-            profile_workloads = profiling::workloads(&description.stdout)?;
+
+        let invalid = || "the compiled aoc-harness runtime returned an invalid plan".to_owned();
+        let described: serde_json::Value =
+            serde_json::from_slice(&description.stdout).map_err(|_| invalid())?;
+        let described = if all_years {
+            described["plans"]
+                .as_array()
+                .filter(|plans| !plans.is_empty())
+                .cloned()
+                .ok_or_else(invalid)?
+        } else {
+            vec![described]
+        };
+        for plan in described {
+            let bytes = plan.to_string().into_bytes();
+            let (year, required) =
+                input::validate_description(&bytes, &project.manifest_dir, action.name())?;
+            plans.push((plan, year, required));
         }
-        if download {
-            let mut progress: Box<dyn Write> = if json {
-                Box::new(io::stderr())
-            } else {
-                Box::new(io::stdout())
-            };
-            calendar::validate(year, &required, chrono::Utc::now())?;
-            let inputs = project.input_dir()?;
+    }
+    if download {
+        let mut progress: Box<dyn Write> = if json {
+            Box::new(io::stderr())
+        } else {
+            Box::new(io::stdout())
+        };
+        let now = chrono::Utc::now();
+        for (_, year, required) in &plans {
+            calendar::validate(*year, required, now)?;
+        }
+
+        let inputs = project.input_dir()?;
+        for (_, year, required) in &plans {
             input::acquire_to(
                 &inputs,
-                year,
-                &required,
+                *year,
+                required,
                 options.offline,
                 session_file.as_deref(),
                 &mut progress,
@@ -401,32 +448,74 @@ fn execute(request: command::Request) -> Result<i32, String> {
     }
 
     if let (Some(profiling), Some(backend)) = (&profiling, &backend) {
-        let validation = Command::new(&executable)
-            .args(&runtime)
-            .arg("--smoke")
-            .status()
-            .map_err(|e| format!("validate profiling workload: {e}"))?;
-        if !validation.success() {
-            return Ok(validation.code().unwrap_or(1));
+        let profiles = project
+            .target_dir
+            .join("aoc-harness/profiles")
+            .join(&project.package_name);
+        let several = plans.len() > 1;
+        if several {
+            if let Some(output) = &profiling.output {
+                profiling::create_output_directory(output)?;
+            }
         }
 
-        let root = year_scoped(
-            project
-                .target_dir
-                .join("aoc-harness/profiles")
-                .join(&project.package_name),
-            artifact_year,
-        );
-        return backend.record(profiling, &root, &executable, &runtime, &profile_workloads);
+        for (plan, plan_year, _) in &plans {
+            let workloads = profiling::workloads(plan.to_string().as_bytes())?;
+            let (runtime, root) = if all_years {
+                let runtime = year_arguments(&runtime, *plan_year, &plan["requested_days"]);
+                let root = year_scoped(
+                    profiles.clone(),
+                    RuntimeYears::artifact_year(years, Some(*plan_year)),
+                );
+                (runtime, root)
+            } else {
+                (
+                    runtime.clone(),
+                    year_scoped(profiles.clone(), artifact_year),
+                )
+            };
+
+            let validation = Command::new(&executable)
+                .args(&runtime)
+                .arg("--smoke")
+                .status()
+                .map_err(|e| format!("validate profiling workload: {e}"))?;
+            if !validation.success() {
+                return Ok(validation.code().unwrap_or(1));
+            }
+
+            let mut recording = profiling.clone();
+            if several {
+                recording.output = profiling
+                    .output
+                    .as_ref()
+                    .map(|output| output.join(plan_year.to_string()));
+            }
+            let code = backend.record(
+                &recording,
+                &root,
+                &executable,
+                &runtime,
+                &workloads,
+                several,
+            )?;
+            if code != 0 {
+                return Ok(code);
+            }
+        }
+        return Ok(0);
     }
 
-    let report_dir = year_scoped(
-        project
-            .target_dir
-            .join("criterion")
-            .join(&project.package_name),
-        artifact_year,
-    );
+    // With --year all, the runtime scopes each year below the base directory.
+    let reports = project
+        .target_dir
+        .join("criterion")
+        .join(&project.package_name);
+    let report_dir = if all_years {
+        reports.clone()
+    } else {
+        year_scoped(reports.clone(), artifact_year)
+    };
     let color = color_enabled(
         options.color,
         io::stdout().is_terminal(),
@@ -450,11 +539,53 @@ fn execute(request: command::Request) -> Result<i32, String> {
             .unwrap_or(1)
     };
     if code == 0 && open {
-        reports::open(&report_dir, |url| {
-            webbrowser::open(url).map_err(|e| e.to_string())
-        })?;
+        let opened = if all_years {
+            plans
+                .iter()
+                .map(|(_, plan_year, _)| {
+                    year_scoped(
+                        reports.clone(),
+                        RuntimeYears::artifact_year(years, Some(*plan_year)),
+                    )
+                })
+                .collect()
+        } else {
+            vec![report_dir]
+        };
+        for report_dir in opened {
+            reports::open(&report_dir, |url| {
+                webbrowser::open(url).map_err(|e| e.to_string())
+            })?;
+        }
     }
     Ok(code)
+}
+
+/// Narrow `--year all` arguments to one year's plan: that year, and the
+/// requested days it registers.
+fn year_arguments(
+    runtime: &[std::ffi::OsString],
+    year: u16,
+    requested_days: &serde_json::Value,
+) -> Vec<std::ffi::OsString> {
+    let days: Vec<_> = requested_days
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_u64)
+        .map(|day| day.to_string())
+        .collect();
+    let mut arguments = runtime.to_vec();
+
+    for index in 1..arguments.len() {
+        let flag = &arguments[index - 1];
+        if flag == "--year" {
+            arguments[index] = year.to_string().into();
+        } else if flag == "--day" && arguments[index] != "all" {
+            arguments[index] = days.join(",").into();
+        }
+    }
+    arguments
 }
 
 pub fn main_entry() -> i32 {
@@ -509,6 +640,28 @@ mod tests {
         assert_eq!(RuntimeYears::artifact_year(None, None), None);
         assert_eq!(year_scoped(base.clone(), requested), base.join("2019"));
         assert_eq!(year_scoped(base.clone(), None), base);
+    }
+
+    #[test]
+    fn year_arguments_narrow_year_all_to_one_plan() {
+        let runtime: Vec<OsString> = ["profile", "--year", "all", "--day", "1,3", "--part", "1"]
+            .map(OsString::from)
+            .to_vec();
+        let every: Vec<OsString> = ["profile", "--year", "all", "--day", "all"]
+            .map(OsString::from)
+            .to_vec();
+
+        let narrowed = year_arguments(&runtime, 2019, &serde_json::json!([1]));
+        let all_days = year_arguments(&every, 2025, &serde_json::json!([]));
+
+        assert_eq!(
+            narrowed,
+            ["profile", "--year", "2019", "--day", "1", "--part", "1"].map(OsString::from)
+        );
+        assert_eq!(
+            all_days,
+            ["profile", "--year", "2025", "--day", "all"].map(OsString::from)
+        );
     }
 
     #[test]

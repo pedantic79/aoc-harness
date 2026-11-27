@@ -50,3 +50,8 @@ several events with `years = { YEAR => module, ... }`, so `input` again accepts
 - The CLI reads `years` and `default_year` by parsing the library source, so
   input acquisition still works while solvers do not compile. `year = EXPR` keeps
   the existing probe, compiled only when the year must be known.
+
+## Select every day or year with `all`
+
+Superseded in part by [`all` selectors](all-selectors.md). `input --all` became
+`input --day all`, and `input --year all` covers every registered year.

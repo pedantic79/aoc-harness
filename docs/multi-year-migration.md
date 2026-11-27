@@ -50,7 +50,7 @@ and by the common crate. Drop the dependency on `advent-of-code-common` itself.
 
 ```toml
 [dependencies]
-aoc-harness = "0.5.1"
+aoc-harness = "0.6.0"
 ```
 
 If you want to keep each repository's history, commit the new crate, then import
@@ -170,12 +170,14 @@ On Linux, use `sed -i -E` without the empty `''` argument.
 ```sh
 cargo test
 cargo aoc-harness list
-cargo aoc-harness run --year 2019 --all-days
-cargo aoc-harness run --year 2025 --all-days --all-solutions
+cargo aoc-harness run --year 2019 --day all
+cargo aoc-harness run --year 2025 --day all --solution all
 ```
 
 `list` without `--year` shows every registered year. Commands that run, download,
-or generate use `--year`, or `default_year` when it is omitted.
+or generate use `--year`, or `default_year` when it is omitted. With
+`aoc-harness` 0.6.0 or later, `cargo aoc-harness run --year all --day all` checks
+every year in one command.
 
 ## 8. Keep saved benchmark baselines (optional)
 

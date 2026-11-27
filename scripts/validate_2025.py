@@ -71,13 +71,13 @@ def main():
     common = ["--manifest-path", str(destination / "Cargo.toml"), "--target-dir", str(root / "target"), "--profile", args.profile]
     if args.offline:
         common.append("--offline")
-    output = subprocess.check_output([str(cli), "run", "--all-days", "--format", "json", *common], text=True)
+    output = subprocess.check_output([str(cli), "run", "--day", "all", "--format", "json", *common], text=True)
     (destination / "run.stdout.log").write_text(output)
     run_report = json.loads(output)
     assert run_report["outcome"] == "success", run_report
-    actual = {(result["day"], result["part"]): result["answer"]
-              for result in run_report["results"]}
-    for result in run_report["results"]:
+    results = [result for year in run_report["years"] for result in year["results"]]
+    actual = {(result["day"], result["part"]): result["answer"] for result in results}
+    for result in results:
         print(f"Day {result['day']} - Part {result['part']} [{result['variant']}]: {result['answer']}")
     assert actual == expected, f"answer mismatch:\nexpected {expected}\nactual {actual}"
 

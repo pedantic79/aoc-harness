@@ -1,5 +1,6 @@
 use super::profiling::{ProfileOptions, Profiler};
 use super::BuildOptions;
+use aoc_harness::Selector;
 use clap::{Arg, ArgAction, Command, CommandFactory, FromArgMatches};
 use std::{ffi::OsString, path::PathBuf};
 
@@ -33,9 +34,10 @@ pub(crate) struct Request {
     pub action: Action,
     pub runtime: Vec<OsString>,
     pub year: Option<u16>,
+    pub all_years: bool,
     pub days: Vec<u8>,
+    pub all_days: bool,
     pub json: bool,
-    pub all: bool,
     pub day_template: Option<PathBuf>,
     pub dry_run: bool,
     pub download: bool,
@@ -89,42 +91,71 @@ fn action_command(action: Action) -> Command {
         action,
         Action::Run | Action::List | Action::Bench | Action::Profile
     );
+    let year = if action == Action::Generate {
+        value(
+            "year",
+            "Registered event year; defaults to the only year or aoc_lib!'s default_year",
+        )
+        .value_name("YEAR")
+        .value_parser(aoc_harness::parse_year)
+    } else {
+        value(
+            "year",
+            if action == Action::List {
+                "Registered event year, or all; defaults to the only or default_year, and list shows every year"
+            } else {
+                "Registered event year, or all; defaults to the only year or aoc_lib!'s default_year"
+            },
+        )
+        .value_name("YEAR|all")
+        .value_parser(aoc_harness::parse_year_selector)
+    };
+    let day = if action == Action::Generate {
+        value(
+            "day",
+            "Days 1-25, numeric or dayN, comma-separated or repeated",
+        )
+        .value_name("DAYS")
+        .value_parser(aoc_harness::parse_day)
+    } else {
+        value(
+            "day",
+            "Days 1-25, numeric or dayN, comma-separated or repeated, or all",
+        )
+        .value_name("DAYS|all")
+        .value_parser(aoc_harness::parse_day_selector)
+    };
     let mut command = BuildOptions::command().name(name)
         .bin_name(format!("cargo aoc-harness {name}"))
         .about(about).version(env!("CARGO_PKG_VERSION"))
         .mut_arg("color", |arg| arg.hide(action != Action::Bench))
-        .after_help(format!("Examples:\n  cargo aoc-harness {name} --day 4\n  cargo aoc-harness {name} --day 1,3\n\nAll options may appear before or after the command."))
+        .after_help(format!("Examples:\n  cargo aoc-harness {name} --day 4\n  cargo aoc-harness {name} --day 1,3\n  cargo aoc-harness {name} --year all --day all\n\nAll options may appear before or after the command."))
         .next_help_heading("Selection options")
-        .arg(value("year", if action == Action::List {
-                "Registered event year; defaults to the only or default_year, and list shows every year"
-            } else {
-                "Registered event year; defaults to the only year or aoc_lib!'s default_year"
-            })
-            .value_parser(aoc_harness::parse_year))
-        .arg(value("day", "Days 1-25, numeric or dayN, comma-separated or repeated")
-            .short('d').value_delimiter(',').action(ArgAction::Append)
-            .value_parser(aoc_harness::parse_day));
+        .arg(year)
+        .arg(day.short('d').value_delimiter(',').action(ArgAction::Append));
     if execution {
         command = command
-            .arg(flag("all-days", "Select every registered day").conflicts_with("day"))
             .arg(
                 value("part", "Part 1 or 2, numeric or partN")
                     .short('p')
                     .requires("day")
                     .value_parser(aoc_harness::parse_part),
             )
-            .arg(value("solution", "Named solution").requires_all(["day", "part"]));
+            .arg(
+                value(
+                    "solution",
+                    if action == Action::Run {
+                        "Named solution (needs --day and --part), or all to run every variant and fail if displayed answers disagree"
+                    } else {
+                        "Named solution (needs --day and --part), or all for every variant"
+                    },
+                )
+                .value_name("NAME|all"),
+            );
     }
     if action == Action::Run {
         command = command
-            .after_help("Examples:\n  cargo aoc-harness run --day 4\n  cargo aoc-harness run --day 1 --all-solutions\n  cargo aoc-harness run --all-days --format json\n\n--all-solutions compares displayed answers exactly, including whitespace.\nDisagreements cause a nonzero exit after execution completes.\nJSON stdout contains one report; build, download, and solution output goes to stderr.\nAll options may appear before or after the command.")
-            .arg(
-                flag(
-                    "all-solutions",
-                    "Run every variant; fail if displayed answers disagree",
-                )
-                .conflicts_with("solution"),
-            )
+            .after_help("Examples:\n  cargo aoc-harness run --day 4\n  cargo aoc-harness run --day 1 --solution all\n  cargo aoc-harness run --day all --format json\n  cargo aoc-harness run --year all --day all\n\n--solution all compares displayed answers exactly, including whitespace.\nDisagreements cause a nonzero exit after execution completes.\nJSON stdout contains one report; build, download, and solution output goes to stderr.\nAll options may appear before or after the command.")
             .arg(
                 value(
                     "format",
@@ -145,7 +176,7 @@ fn action_command(action: Action) -> Command {
                     .short('i')
                     .value_parser(clap::value_parser!(PathBuf))
                     .requires("day")
-                    .conflicts_with_all(["all-days", "download"]),
+                    .conflicts_with("download"),
             )
             .arg(flag(
                 "download",
@@ -159,14 +190,7 @@ fn action_command(action: Action) -> Command {
     }
     if action == Action::Input {
         command = command
-            .after_help("Examples:\n  cargo aoc-harness input --day 1\n  cargo aoc-harness input --all\n  cargo aoc-harness input --year 2019 --all\n\nThe selected package's aoc_lib! declaration supplies the event year: --year selects one\nof its registered years, defaulting to the only year or default_year.\nWithout --day or --all, today's day is selected only during that event's release window.\nAll options may appear before or after the command.")
-            .arg(
-                flag(
-                    "all",
-                    "Download all released days of the selected event",
-                )
-                .conflicts_with("day"),
-            )
+            .after_help("Examples:\n  cargo aoc-harness input --day 1\n  cargo aoc-harness input --day all\n  cargo aoc-harness input --year 2019 --day all\n  cargo aoc-harness input --year all --day all\n\nThe selected package's aoc_lib! declaration supplies the event year: --year selects one\nof its registered years, or all of them, defaulting to the only year or default_year.\n--day all selects every released day of each selected event.\nWithout --day, today's day is selected only during that event's release window.\nWith --year all, years where no selected day is available are skipped.\nAll options may appear before or after the command.")
             .arg(
                 value("session-file", "Override the shared session source")
                     .value_parser(clap::value_parser!(PathBuf)),
@@ -210,7 +234,7 @@ fn action_command(action: Action) -> Command {
     }
     if action == Action::Bench {
         command = command
-            .after_help("Examples:\n  cargo aoc-harness bench --day 4\n  cargo aoc-harness bench --day 1,3 --family generator,solver\n  cargo aoc-harness bench --all-days --family full-run\n  cargo aoc-harness bench --day 4 --save-baseline before\n  cargo aoc-harness bench --day 4 --baseline before\n\nUse comma-separated values or repeat --family to select multiple families.\nChoose one baseline operation per measured run; neither works with --smoke.\nBaseline names are single directory components excluding base, new, change, report, and profile.\nAll options may appear before or after the command.")
+            .after_help("Examples:\n  cargo aoc-harness bench --day 4\n  cargo aoc-harness bench --day 1,3 --family generator,solver\n  cargo aoc-harness bench --day all --family full-run\n  cargo aoc-harness bench --day 4 --save-baseline before\n  cargo aoc-harness bench --day 4 --baseline before\n\nUse comma-separated values or repeat --family to select multiple families.\nChoose one baseline operation per measured run; neither works with --smoke.\nBaseline names are single directory components excluding base, new, change, report, and profile.\nAll options may appear before or after the command.")
             .next_help_heading("Benchmark options")
             .arg(
                 value("sample-size", "Samples per benchmark (at least 10)")
@@ -236,7 +260,7 @@ fn action_command(action: Action) -> Command {
     }
     if action == Action::Profile {
         command = command
-            .after_help("Examples:\n  cargo aoc-harness profile --day 4 --part 2\n  cargo aoc-harness profile --day 4 --family generator,solver --profiler flamegraph\n  cargo aoc-harness profile --all-days --family full-run\n\nUse comma-separated values or repeat --family to select multiple families.\nEach workload gets its own recording; --duration applies to each workload.\nAll options may appear before or after the command.")
+            .after_help("Examples:\n  cargo aoc-harness profile --day 4 --part 2\n  cargo aoc-harness profile --day 4 --family generator,solver --profiler flamegraph\n  cargo aoc-harness profile --day all --family full-run\n\nUse comma-separated values or repeat --family to select multiple families.\nEach workload gets its own recording; --duration applies to each workload.\nAll options may appear before or after the command.")
             .next_help_heading("Profiling options")
             .arg(
                 value(
@@ -361,16 +385,52 @@ pub(crate) fn parse(mut args: Vec<OsString>) -> Result<Request, clap::Error> {
             .unwrap_or(false)
     };
     let get_path = |name| matches.try_get_one::<PathBuf>(name).ok().flatten().cloned();
-    let mut days: Vec<u8> = matches
-        .try_get_many::<u8>("day")
-        .ok()
-        .flatten()
-        .into_iter()
-        .flatten()
-        .copied()
+    let conflict =
+        |message: &str| clap::Error::raw(clap::error::ErrorKind::ArgumentConflict, message);
+
+    let selected_days: Vec<Selector<u8>> = match matches.try_get_many::<Selector<u8>>("day") {
+        Ok(days) => days.into_iter().flatten().copied().collect(),
+        Err(_) => matches
+            .try_get_many::<u8>("day")
+            .ok()
+            .flatten()
+            .into_iter()
+            .flatten()
+            .map(|day| Selector::One(*day))
+            .collect(),
+    };
+    let all_days = selected_days.contains(&Selector::All);
+    if all_days && selected_days.len() > 1 {
+        return Err(conflict("--day all cannot be combined with specific days"));
+    }
+    let mut days: Vec<u8> = selected_days
+        .iter()
+        .filter_map(|day| match day {
+            Selector::One(day) => Some(*day),
+            Selector::All => None,
+        })
         .collect();
     days.sort_unstable();
     days.dedup();
+
+    let (year, all_years) = match matches.try_get_one::<Selector<u16>>("year") {
+        Ok(Some(Selector::All)) => (None, true),
+        Ok(Some(Selector::One(year))) => (Some(*year), false),
+        Ok(None) => (None, false),
+        Err(_) => (
+            matches.try_get_one::<u16>("year").ok().flatten().copied(),
+            false,
+        ),
+    };
+
+    let solution = matches.try_get_one::<String>("solution").ok().flatten();
+    let part = matches.try_get_one::<u8>("part").ok().flatten();
+    if solution.is_some_and(|name| name != "all") && part.is_none() {
+        return Err(clap::Error::raw(
+            clap::error::ErrorKind::MissingRequiredArgument,
+            "--solution <NAME> requires --day and --part; use --solution all to select every variant",
+        ));
+    }
     let mut build = if action == Action::Credentials {
         BuildOptions::default()
     } else {
@@ -384,14 +444,17 @@ pub(crate) fn parse(mut args: Vec<OsString>) -> Result<Request, clap::Error> {
     if let Some(("status", status)) = matches.subcommand() {
         session_file = status.get_one::<PathBuf>("session-file").cloned();
     }
-    let year = matches.try_get_one::<u16>("year").ok().flatten().copied();
     let mut runtime: Vec<OsString> = vec![action.name().into()];
     // Forward only when given, so runtimes predating years-v1 keep working.
-    if let Some(year) = year {
+    if all_years {
+        runtime.extend(["--year".into(), "all".into()]);
+    } else if let Some(year) = year {
         runtime.push("--year".into());
         runtime.push(year.to_string().into());
     }
-    if !days.is_empty() {
+    if all_days {
+        runtime.extend(["--day".into(), "all".into()]);
+    } else if !days.is_empty() {
         runtime.push("--day".into());
         runtime.push(
             days.iter()
@@ -401,12 +464,10 @@ pub(crate) fn parse(mut args: Vec<OsString>) -> Result<Request, clap::Error> {
                 .into(),
         );
     }
-    for name in ["all-days", "all-solutions", "smoke"] {
-        if get_flag(name) {
-            runtime.push(format!("--{name}").into());
-        }
+    if get_flag("smoke") {
+        runtime.push("--smoke".into());
     }
-    if let Some(part) = matches.try_get_one::<u8>("part").ok().flatten() {
+    if let Some(part) = part {
         runtime.push("--part".into());
         runtime.push(part.to_string().into());
     }
@@ -463,10 +524,10 @@ pub(crate) fn parse(mut args: Vec<OsString>) -> Result<Request, clap::Error> {
         })?;
     }
     if get_path("input").is_some() && days.len() != 1 {
-        return Err(clap::Error::raw(
-            clap::error::ErrorKind::ArgumentConflict,
-            "--input requires exactly one selected day",
-        ));
+        return Err(conflict("--input requires exactly one selected day"));
+    }
+    if get_path("input").is_some() && all_years {
+        return Err(conflict("--input cannot be combined with --year all"));
     }
     let profiling = if action == Action::Profile {
         let profiler = *matches.get_one::<Profiler>("profiler").unwrap();
@@ -491,13 +552,14 @@ pub(crate) fn parse(mut args: Vec<OsString>) -> Result<Request, clap::Error> {
         action,
         runtime,
         year,
+        all_years,
         days,
+        all_days,
         json: matches
             .try_get_one::<aoc_harness::RunFormat>("format")
             .ok()
             .flatten()
             == Some(&aoc_harness::RunFormat::Json),
-        all: get_flag("all"),
         day_template: get_path("day-template"),
         dry_run: get_flag("dry-run"),
         download: get_flag("download"),
@@ -629,6 +691,59 @@ mod tests {
             ["run", "--year", "2019"].map(OsString::from)
         );
         assert!(credentials.is_err());
+    }
+
+    #[test]
+    fn all_selects_every_year_day_and_variant_for_project_commands() {
+        let parse_args = |args: &[&str]| parse(args.iter().map(OsString::from).collect());
+
+        for action in ["run", "list", "bench", "profile"] {
+            let request = parse_args(&[
+                action,
+                "--year",
+                "all",
+                "--day",
+                "all",
+                "--part",
+                "2",
+                "--solution",
+                "all",
+            ])
+            .unwrap();
+
+            assert!(request.all_years && request.all_days);
+            assert_eq!(request.year, None);
+            assert!(request.days.is_empty());
+            assert_eq!(
+                request.runtime[..5],
+                [action, "--year", "all", "--day", "all"].map(OsString::from)
+            );
+            assert!(request
+                .runtime
+                .windows(2)
+                .any(|pair| pair == ["--solution", "all"]));
+        }
+
+        let input = parse_args(&["input", "--year", "all", "--day", "all"]).unwrap();
+
+        assert!(input.all_years && input.all_days);
+        for args in [
+            vec!["run", "--day", "all,3"],
+            vec!["run", "--day", "all", "--day", "3"],
+            vec!["run", "--solution", "fast"],
+            vec!["run", "--day", "1", "--solution", "fast"],
+            vec!["run", "--day", "all", "--input", "input.txt"],
+            vec!["run", "--year", "all", "--day", "1", "--input", "input.txt"],
+            vec!["run", "--year", "every"],
+            vec!["run", "--all-days"],
+            vec!["run", "--all-solutions"],
+            vec!["input", "--all"],
+            vec!["input", "--solution", "all"],
+            vec!["generate", "--day", "all"],
+            vec!["generate", "--year", "all", "--day", "1"],
+        ] {
+            assert!(parse_args(&args).is_err(), "unexpectedly accepted {args:?}");
+        }
     }
 
     #[test]

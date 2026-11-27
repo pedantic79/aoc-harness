@@ -9,6 +9,7 @@
 use crate::project::{Bridge, ConsumerProject};
 use serde_json::Value;
 use std::{
+    ffi::OsString,
     fmt,
     path::Path,
     process::{Command, Output},
@@ -24,10 +25,11 @@ const UPGRADE_CLI: &str = "cargo install aoc-harness-cli --locked";
 
 /// Capabilities this CLI uses, each with the first `aoc-harness` release that
 /// advertises it.
-const CAPABILITIES: [(&str, &str); 3] = [
+const CAPABILITIES: [(&str, &str); 4] = [
     ("input-plan-v1", "0.1.0"),
     ("profiling-v1", "0.2.0"),
     ("years-v1", "0.5.0"),
+    ("select-all-v1", "0.6.0"),
 ];
 
 /// Why the compiled runtime couldn't be described.
@@ -148,6 +150,33 @@ impl Runtime {
         ))
     }
 
+    /// Prepare `all` selectors for this runtime. Runtimes before
+    /// `select-all-v1` spell `--day all` and `--solution all` as `--all-days`
+    /// and `--all-solutions`, and cannot combine every day with `--part` or
+    /// select every year.
+    pub fn adapt_selectors(
+        &self,
+        runtime: &mut Vec<OsString>,
+        project: &ConsumerProject,
+        bridge: &Bridge,
+    ) -> Result<(), String> {
+        let feature = if has_pair(runtime, "--year", "all") {
+            Some("--year all")
+        } else if has_pair(runtime, "--day", "all") && runtime.iter().any(|arg| arg == "--part") {
+            Some("--day all with --part")
+        } else {
+            None
+        };
+        if let Some(feature) = feature {
+            self.require("select-all-v1", feature, project, bridge)?;
+        }
+
+        if !self.has("select-all-v1") {
+            lower_selectors(runtime);
+        }
+        Ok(())
+    }
+
     /// Require `years-v1` and a registered `year`.
     pub fn require_year(
         &self,
@@ -185,6 +214,39 @@ impl RuntimeYears {
 
         requested.or(runtime.default_year)
     }
+}
+
+fn has_pair(runtime: &[OsString], flag: &str, value: &str) -> bool {
+    runtime
+        .windows(2)
+        .any(|pair| pair[0] == flag && pair[1] == value)
+}
+
+/// Spell `all` selectors as the flags runtimes before `select-all-v1` accept.
+pub(crate) fn lower_selectors(runtime: &mut Vec<OsString>) {
+    let mut lowered = Vec::with_capacity(runtime.len());
+    let mut arguments = std::mem::take(runtime).into_iter().peekable();
+
+    while let Some(argument) = arguments.next() {
+        let flag = if argument == "--day" {
+            "--all-days"
+        } else if argument == "--solution" {
+            "--all-solutions"
+        } else {
+            lowered.push(argument);
+            continue;
+        };
+
+        if arguments.peek().is_some_and(|value| value == "all") {
+            arguments.next();
+            lowered.push(flag.into());
+        } else {
+            lowered.push(argument);
+            lowered.extend(arguments.next());
+        }
+    }
+
+    *runtime = lowered;
 }
 
 fn describe(executable: &Path, request: &str) -> Result<Output, ProbeError> {
@@ -531,6 +593,60 @@ mod tests {
         assert!(reported.contains("uses aoc-harness 0.4.9."), "{reported}");
         assert!(parse(br#"{"capabilities":["years-v1"]}"#).is_none());
         assert!(parse(b"not json").is_none());
+    }
+
+    #[test]
+    fn all_selectors_are_lowered_for_runtimes_that_predate_them() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = project(temp.path(), "", registry(serde_json::json!({})));
+        let bridge = Bridge {
+            executable: PathBuf::new(),
+            lockfile: temp.path().join("Cargo.lock"),
+        };
+        let current = parse(br#"{"capabilities":["years-v1","select-all-v1"],"years":[2019,2025],"runtime_version":"0.6.0"}"#).unwrap();
+        let older = parse(
+            br#"{"capabilities":["years-v1"],"years":[2019,2025],"runtime_version":"0.5.1"}"#,
+        )
+        .unwrap();
+        let arguments = |args: &[&str]| args.iter().map(OsString::from).collect::<Vec<_>>();
+        let adapt = |runtime: &Runtime, args: &[&str]| {
+            let mut args = arguments(args);
+            runtime
+                .adapt_selectors(&mut args, &project, &bridge)
+                .map(|()| args)
+        };
+
+        let kept = adapt(&current, &["run", "--day", "all", "--solution", "all"]).unwrap();
+        let lowered = adapt(&older, &["run", "--day", "all", "--solution", "all"]).unwrap();
+        let named = adapt(&older, &["run", "--day", "1", "--solution", "all-in"]).unwrap();
+        let years = adapt(&older, &["run", "--year", "all"]).unwrap_err();
+        let part = adapt(&older, &["run", "--day", "all", "--part", "1"]).unwrap_err();
+
+        assert_eq!(
+            kept,
+            arguments(&["run", "--day", "all", "--solution", "all"])
+        );
+        assert_eq!(
+            lowered,
+            arguments(&["run", "--all-days", "--all-solutions"])
+        );
+        assert_eq!(
+            named,
+            arguments(&["run", "--day", "1", "--solution", "all-in"])
+        );
+        assert!(
+            years.starts_with("--year all needs aoc-harness 0.6.0 or later, but "),
+            "{years}"
+        );
+        assert!(
+            part.starts_with("--day all with --part needs aoc-harness 0.6.0"),
+            "{part}"
+        );
+        assert!(adapt(
+            &current,
+            &["run", "--year", "all", "--day", "all", "--part", "1"]
+        )
+        .is_ok());
     }
 
     #[test]

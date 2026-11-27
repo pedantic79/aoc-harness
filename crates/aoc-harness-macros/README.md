@@ -17,7 +17,7 @@ macros:
 
 ```toml
 [dependencies]
-aoc-harness = "0.5.1"
+aoc-harness = "0.6.0"
 ```
 
 Import the macros through `aoc_harness` in your solution code:
@@ -48,7 +48,8 @@ Literals and `const` items such as `year = EVENT_YEAR` work; an expression that
 can only be evaluated at run time doesn't compile.
 
 `aoc_lib! { years = { 2019 => y2019, 2025 => y2025 }, default_year = 2025 }`
-registers several events in one crate, and `cargo aoc-harness --year` selects one.
+registers several events in one crate. `cargo aoc-harness --year 2019` selects
+one, and `--year all` covers each.
 `#[aoc]` and `#[aoc_generator]` are written the same way inside each year
 module; they take the year from the module they are in, so two years can reuse
 the same day, part, and function names. The keys and `default_year` are integer

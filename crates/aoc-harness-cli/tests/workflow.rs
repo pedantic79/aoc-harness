@@ -129,13 +129,16 @@ fn command_help_works_without_a_consumer_or_cargo() {
                 assert!(output.contains("--manifest-path"));
                 assert!(output.contains("--day"));
                 assert!(!output.contains("--days"));
-                assert!(output.contains("--all-days"));
+                assert!(output.contains("--day <DAYS|all>"));
+                assert!(output.contains("--year <YEAR|all>"));
+                assert!(output.contains("--solution <NAME|all>"));
+                assert!(!output.contains("--all-days"));
                 assert!(output.contains("--solution"));
                 assert!(output.contains("-p, --part"));
                 assert!(!output.contains("-p, --package"));
                 assert!(output.contains("Examples:"));
                 assert!(!output.contains("Commands:"));
-                assert_eq!(output.contains("--all-solutions"), action == "run");
+                assert!(!output.contains("--all-solutions"));
                 assert_eq!(output.contains("--format"), action == "run");
                 assert_eq!(output.contains("--save-baseline"), action == "bench");
                 assert_eq!(output.contains("--baseline"), action == "bench");
@@ -180,14 +183,19 @@ fn command_help_works_without_a_consumer_or_cargo() {
         assert!(output.contains("--baseline <NAME>"));
 
         let input_help = help(&["input", "--help"]);
-        assert!(input_help.contains("--year <year>"));
+        assert!(input_help.contains("--year <YEAR|all>"));
+        assert!(input_help.contains("--day <DAYS|all>"));
+        assert!(!input_help.contains("--all "));
         assert!(input_help.contains("selected event"));
-        for action in ["run", "list", "bench", "profile", "generate"] {
+        for action in ["run", "list", "bench", "profile"] {
             assert!(
-                help(&[action, "--help"]).contains("--year <year>"),
+                help(&[action, "--help"]).contains("--year <YEAR|all>"),
                 "{action}"
             );
         }
+        let generate_help = help(&["generate", "--help"]);
+        assert!(generate_help.contains("--year <YEAR>"));
+        assert!(generate_help.contains("--day <DAYS>"));
         let run_help = help(&["run", "--help"]);
         assert!(run_help.contains("fail if displayed answers disagree"));
         assert!(run_help.contains("--format"));
@@ -294,7 +302,7 @@ fn installed_library_workflow() {
     assert!(output.contains("Full run (2025 day 3, 2 selected)"));
     assert!(!output.contains("Day 1 -"));
 
-    let output = success(run(&["run", "--all-days", "--profile", "dev"]));
+    let output = success(run(&["run", "--day", "all", "--profile", "dev"]));
 
     assert!(output.starts_with("AOC 2025\n\nDay 1 - Part 1: 6\n\tgenerator: "));
     assert!(output.contains("\n\trunner: "));
@@ -347,7 +355,7 @@ fn installed_library_workflow() {
     ]));
 
     assert!(output.contains("Day 1 - Part 2 - mutable: 306"));
-    let output = run(&["run", "--day", "1", "--all-solutions", "--profile", "dev"]);
+    let output = run(&["run", "--day", "1", "--solution", "all", "--profile", "dev"]);
 
     assert!(
         String::from_utf8_lossy(&output.stdout).contains("Comparison run (2025 day 1, 5 selected)")
@@ -426,7 +434,8 @@ fn installed_library_workflow() {
 
     let output = success(run(&[
         "bench",
-        "--all-days",
+        "--day",
+        "all",
         "--family",
         "generator,solver,end-to-end,full-run",
         "--smoke",
@@ -578,8 +587,8 @@ fn installed_library_workflow() {
     );
     failure(run(&["run", "--part", "1", "--profile", "dev"]), "--day");
     failure(
-        run(&["run", "--day", "1", "--all-days", "--profile", "dev"]),
-        "cannot be used with",
+        run(&["run", "--day", "1,all", "--profile", "dev"]),
+        "--day all cannot be combined with specific days",
     );
     failure(
         run(&["run", "--day", "1,25", "--profile", "dev"]),
@@ -1273,7 +1282,11 @@ fn cli_preflight_and_session_status_work_outside_cargo() {
         vec!["bench", "--open", "--smoke"],
         vec!["input", "--year", "2014"],
         vec!["run", "--year", "twenty"],
-        vec!["input", "--year", "2025", "--all", "--day", "1"],
+        vec!["input", "--year", "2025", "--day", "all,1"],
+        vec!["input", "--all"],
+        vec!["run", "--all-days"],
+        vec!["run", "--all-solutions"],
+        vec!["generate", "--day", "all"],
         vec!["generate", "--day", "26"],
         vec!["profile", "--duration", "0"],
         vec!["profile", "--template", "CPU Counters"],
@@ -1707,7 +1720,8 @@ fn main() {
             "--family",
             "solver",
         ],
-        vec!["--all-days", "--family", "full-run"],
+        vec!["--day", "all", "--family", "full-run"],
+        vec!["--year", "all", "--family", "solver"],
     ] {
         let output = success(run(&args, ""));
 
@@ -1865,8 +1879,15 @@ fn run_reports_preserve_answers_and_check_every_completed_variant() {
         args.extend(["--profile", "dev", "--offline"]);
         invoke(cli, &consumer, &args, &target, temp.path())
     };
+    // A single-year run reports that year alone inside the wrapper.
     let report = |output: &Output| -> serde_json::Value {
-        serde_json::from_slice(&output.stdout).unwrap_or_else(|e| panic!("{e}: {output:?}"))
+        let value: serde_json::Value =
+            serde_json::from_slice(&output.stdout).unwrap_or_else(|e| panic!("{e}: {output:?}"));
+        let years = value["years"].as_array().unwrap();
+
+        assert_eq!(years.len(), 1, "{value}");
+        assert_eq!(value["outcome"], years[0]["outcome"], "{value}");
+        years[0].clone()
     };
 
     let output = run(&[
@@ -1875,7 +1896,8 @@ fn run_reports_preserve_answers_and_check_every_completed_variant() {
         "1",
         "-p",
         "1",
-        "--all-solutions",
+        "--solution",
+        "all",
         "--format",
         "json",
         "--download",
@@ -1907,7 +1929,8 @@ fn run_reports_preserve_answers_and_check_every_completed_variant() {
         "1",
         "-p",
         "2",
-        "--all-solutions",
+        "--solution",
+        "all",
         "--format",
         "json",
     ]);
@@ -1934,7 +1957,8 @@ fn run_reports_preserve_answers_and_check_every_completed_variant() {
         "1",
         "-p",
         "2",
-        "--all-solutions",
+        "--solution",
+        "all",
         "--input",
         alternate.to_str().unwrap(),
         "--format",
@@ -1991,7 +2015,7 @@ aoc_harness::aoc_lib! { year = 2025 }
 "#,
     )
     .unwrap();
-    let output = run(&["run", "-d", "1", "--all-solutions", "--format", "json"]);
+    let output = run(&["run", "-d", "1", "--solution", "all", "--format", "json"]);
     let value = report(&output);
     let diagnostics = String::from_utf8_lossy(&output.stderr);
 
@@ -2003,7 +2027,7 @@ aoc_harness::aoc_lib! { year = 2025 }
     assert!(diagnostics.contains("solver diagnostic"));
     assert_eq!(diagnostics.matches("format diagnostic").count(), 2);
 
-    let output = run(&["run", "-d", "1", "--all-solutions"]);
+    let output = run(&["run", "-d", "1", "--solution", "all"]);
     let output = success(output);
 
     assert_eq!(output.matches("format diagnostic").count(), 2);
@@ -2020,7 +2044,7 @@ aoc_harness::aoc_lib! { year = 2025 }
 "#,
     )
     .unwrap();
-    let output = run(&["run", "-d", "1", "--all-solutions", "--format", "json"]);
+    let output = run(&["run", "-d", "1", "--solution", "all", "--format", "json"]);
     let value = report(&output);
 
     assert!(!output.status.success());
@@ -2219,7 +2243,7 @@ fn input_resolves_the_declared_event_without_compiling_unfinished_solvers() {
         let before = snapshot(&consumer);
 
         let output = success(run(&["input", "-d", "1", "--offline"]));
-        let all = success(run(&["input", "--all", "--offline"]));
+        let all = success(run(&["input", "--day", "all", "--offline"]));
 
         assert!(output.contains("input/2025/day1.txt"), "{declaration}: {output}");
         assert!(all.contains("12 cached"), "{declaration}: {all}");
@@ -2336,8 +2360,9 @@ fn year_selection_runs_lists_downloads_and_generates_one_event() {
     assert!(older.contains("AOC 2019"), "{older}");
     assert!(older.contains("Day 1 - Part 1: 658"), "{older}");
     let report: serde_json::Value = serde_json::from_str(&report).unwrap();
-    assert_eq!(report["year"], 2019);
-    assert_eq!(report["results"][0]["answer"], "658");
+    assert_eq!(report["years"].as_array().unwrap().len(), 1);
+    assert_eq!(report["years"][0]["year"], 2019);
+    assert_eq!(report["years"][0]["results"][0]["answer"], "658");
     let first = listed.find("2019 day 1 part 1 [default]").unwrap();
     let second = listed.find("2025 day 2 part 1 [default]").unwrap();
     assert!(first < second, "{listed}");
@@ -2348,6 +2373,49 @@ fn year_selection_runs_lists_downloads_and_generates_one_event() {
     failure(
         unknown,
         "event year 2018 is not registered; registered years: 2019, 2025",
+    );
+
+    // --year all covers each registered year, with each year's latest day by default.
+    let every = success(run(&["run", "--year", "all"]));
+    let every_report = success(run(&[
+        "run", "--year", "all", "--day", "all", "--format", "json",
+    ]));
+    let every_listed = success(run(&["list", "--year", "all", "-d", "2"]));
+    let every_smoke = success(run(&["bench", "--year", "all", "-d", "1", "--smoke"]));
+
+    let every_report: serde_json::Value = serde_json::from_str(&every_report).unwrap();
+    let years: Vec<_> = every_report["years"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|year| {
+            (
+                year["year"].clone(),
+                year["results"].as_array().unwrap().len(),
+            )
+        })
+        .collect();
+    let first = every.find("AOC 2019").unwrap();
+    let second = every.find("AOC 2025").unwrap();
+    assert!(first < second, "{every}");
+    assert!(every.contains("Day 2 - Part 1"), "{every}");
+    assert_eq!(every_report["outcome"], "success", "{every_report}");
+    assert_eq!(years[0].0, 2019, "{every_report}");
+    assert_eq!(years[1].0, 2025, "{every_report}");
+    assert!(years[1].1 > years[0].1, "{every_report}");
+    assert!(every_listed.contains("2025 day 2 part 1"), "{every_listed}");
+    assert!(!every_listed.contains("2019"), "{every_listed}");
+    assert!(
+        every_smoke.contains("Benchmark smoke passed for 2019"),
+        "{every_smoke}"
+    );
+    assert!(
+        every_smoke.contains("Benchmark smoke passed for 2025"),
+        "{every_smoke}"
+    );
+    failure(
+        run(&["run", "--year", "all", "-d", "3"]),
+        "no solutions match",
     );
 
     // Input and generation read the mapping from source while solvers are broken.
@@ -2366,7 +2434,8 @@ fn year_selection_runs_lists_downloads_and_generates_one_event() {
         "--offline",
     ]));
     let newer = success(offline(&["input", "-d", "1", "--offline"]));
-    let all = offline(&["input", "--year", "2019", "--all", "--offline"]);
+    let every = success(offline(&["input", "--year", "all", "-d", "1", "--offline"]));
+    let all = offline(&["input", "--year", "2019", "--day", "all", "--offline"]);
     let unknown = offline(&[
         "input",
         "--year",
@@ -2387,6 +2456,8 @@ fn year_selection_runs_lists_downloads_and_generates_one_event() {
 
     assert!(older.contains("input/2019/day1.txt"), "{older}");
     assert!(newer.contains("input/2025/day1.txt"), "{newer}");
+    assert!(every.contains("input/2019/day1.txt"), "{every}");
+    assert!(every.contains("input/2025/day1.txt"), "{every}");
     failure(all, "Inputs: 1 cached, 0 downloaded, 24 failed");
     assert!(!String::from_utf8_lossy(&unknown.stderr).contains("read session"));
     failure(
@@ -2605,6 +2676,34 @@ fn runtime_mismatches_name_the_side_to_upgrade() {
                  Fix: update the aoc-harness source at {} to 0.5.0 or later",
                 manifest.display(),
                 old_runtime.display()
+            ),
+        );
+    }
+
+    // Older runtimes receive `all` selectors as the flags they accept.
+    let lowered = success(run("legacy", &["run", "--day", "all", "--solution", "all"]));
+    let undescribed = success(run("crash", &["list", "--day", "all"]));
+
+    assert!(
+        lowered.contains("runtime ran: run --all-days --all-solutions"),
+        "{lowered}"
+    );
+    assert!(
+        undescribed.contains("runtime ran: list --all-days"),
+        "{undescribed}"
+    );
+    for (args, feature) in [
+        (&["run", "--year", "all"][..], "--year all"),
+        (
+            &["run", "--day", "all", "--part", "1"],
+            "--day all with --part",
+        ),
+    ] {
+        failure(
+            run("legacy", args),
+            &format!(
+                "error: {feature} needs aoc-harness 0.6.0 or later, but {} uses aoc-harness 0.4.1.",
+                manifest.display()
             ),
         );
     }

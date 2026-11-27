@@ -8,7 +8,7 @@ mod baselines;
 pub use baselines::name as parse_baseline_name;
 mod run_report;
 
-use clap::{ColorChoice, Parser, ValueEnum};
+use clap::{ColorChoice, CommandFactory, Parser, ValueEnum};
 use std::{
     collections::BTreeMap,
     error::Error as StdError,
@@ -163,30 +163,29 @@ impl Events {
         self.registry(Some(year))?.read_input(day)
     }
 
-    /// List the selected year, or every registered year in ascending order
-    /// when `--year` is omitted. Years without a matching solution are
-    /// skipped; the listing fails only when no year matches.
-    pub fn list(&self, options: &Options) -> Result<(), Error> {
-        for line in self.listing(options)? {
-            println!("{line}");
-        }
-        Ok(())
-    }
-
-    fn listing(&self, options: &Options) -> Result<Vec<String>, Error> {
-        if options.year.is_some() || self.registries.len() == 1 {
-            return self.registry(options.year)?.listing(options);
+    /// The registries a command covers, each with options narrowed to its year.
+    ///
+    /// `--year all`, and `list` without `--year`, cover every registered year
+    /// in ascending order. Each year keeps only the requested days it
+    /// registers, and years with no matching solution are skipped; selection
+    /// fails only when a requested day or the whole selection matches no year.
+    fn scopes(&self, options: &Options) -> Result<Vec<(&'static Registry, Options)>, Error> {
+        let every = options.all_years()
+            || (options.year.is_none() && matches!(options.action, Action::List));
+        if !every {
+            let registry = self.registry(options.event_year())?;
+            return Ok(vec![(registry, options.clone())]);
         }
 
         let has_day = |registry: &Registry, day: u8| {
             registry.solutions.iter().any(|s| {
                 s.day == day
                     && options.part.is_none_or(|p| s.part == p)
-                    && options.solution.as_ref().is_none_or(|n| s.name == n)
+                    && options.solution_name().is_none_or(|n| s.name == n)
             })
         };
         if options
-            .day
+            .days()
             .iter()
             .any(|day| !self.registries.iter().any(|r| has_day(r, *day)))
         {
@@ -195,21 +194,27 @@ impl Events {
             ));
         }
 
-        let requested_days = !options.day.is_empty();
-        let mut listings = Vec::new();
+        let requested_days = !options.days().is_empty();
+        let mut scopes = Vec::new();
         let mut failure = None;
         for year in self.years() {
             let registry = self.registry(Some(year))?;
             // Ask each year only for its own requested days, so a day that
             // only another year registers does not hide this year's matches.
-            let mut options = options.clone();
-            options.day.retain(|day| has_day(registry, *day));
-            if requested_days && options.day.is_empty() {
+            let mut narrowed = Options {
+                year: Some(Selector::One(year)),
+                ..options.clone()
+            };
+            narrowed.day.retain(|day| match day {
+                Selector::One(day) => has_day(registry, *day),
+                Selector::All => true,
+            });
+            if requested_days && narrowed.day.is_empty() {
                 continue;
             }
 
-            match registry.listing(&options) {
-                Ok(lines) => listings.extend(lines),
+            match registry.select(&narrowed, true) {
+                Ok(_) => scopes.push((registry, narrowed)),
                 Err(error) => {
                     failure.get_or_insert(error);
                 }
@@ -217,40 +222,110 @@ impl Events {
         }
 
         match failure {
-            Some(error) if listings.is_empty() => Err(error),
-            _ => Ok(listings),
+            Some(error) if scopes.is_empty() => Err(error),
+            _ => Ok(scopes),
         }
     }
 
-    /// Benchmark or profile the selected year. Without `--report-dir`, a crate
-    /// that registers several years writes Criterion reports and baselines to
-    /// `target/criterion/<year>/`, so years never share them. A single-year
-    /// crate keeps `target/criterion/`, and an explicit directory is used as given.
-    pub fn bench(&self, options: &Options) -> Result<(), Error> {
-        let registry = self.registry(options.year)?;
+    /// List the selected year, or every registered year in ascending order
+    /// with `--year all` or without `--year`. Years without a matching
+    /// solution are skipped; the listing fails only when no year matches.
+    pub fn list(&self, options: &Options) -> Result<(), Error> {
+        for line in self.listing(options)? {
+            println!("{line}");
+        }
+        Ok(())
+    }
 
-        registry.bench(&Options {
-            report_dir: Some(self.report_dir(registry, options)),
-            ..options.clone()
-        })
+    fn listing(&self, options: &Options) -> Result<Vec<String>, Error> {
+        let mut listings = Vec::new();
+        for (registry, options) in self.scopes(options)? {
+            listings.extend(registry.listing(&options)?);
+        }
+        Ok(listings)
+    }
+
+    /// Run the selected year, or each year in ascending order with `--year
+    /// all`. Every year's inputs are read before any solution runs. A failed
+    /// solution stops the run; a variant disagreement fails after every year.
+    pub fn run(&self, options: &Options) -> Result<(), Error> {
+        let scopes = self.scopes(options)?;
+
+        run_report::run(&scopes, options)
+    }
+
+    /// Benchmark or profile the selected year, or each year with `--year all`.
+    /// A crate that registers several years writes Criterion reports and
+    /// baselines to `target/criterion/<year>/`, so years never share them. A
+    /// single-year crate keeps `target/criterion/`. An explicit `--report-dir`
+    /// is used as given, or as the parent of each year's directory with
+    /// `--year all`. Every year is planned, and its baseline checked, before
+    /// any year is measured.
+    pub fn bench(&self, options: &Options) -> Result<(), Error> {
+        let scopes = self.scopes(options)?;
+        let scopes: Vec<_> = scopes
+            .into_iter()
+            .map(|(registry, narrowed)| {
+                let report_dir = self.report_dir(registry, options);
+                let narrowed = Options {
+                    report_dir: Some(report_dir),
+                    ..narrowed
+                };
+                (registry, narrowed)
+            })
+            .collect();
+
+        if scopes.len() > 1 {
+            for (registry, options) in &scopes {
+                let plan = registry.plan(options)?;
+                if let (Some(name), Some(report_dir)) = (&options.baseline, &options.report_dir) {
+                    baselines::require(report_dir, name, &plan.labels())?;
+                }
+            }
+        }
+        for (registry, options) in &scopes {
+            registry.bench(options)?;
+        }
+        Ok(())
     }
 
     fn report_dir(&self, registry: &Registry, options: &Options) -> PathBuf {
+        let scoped = |base: PathBuf| base.join(registry.year.to_string());
         match &options.report_dir {
+            Some(explicit) if options.all_years() && self.registries.len() > 1 => {
+                scoped(explicit.clone())
+            }
             Some(explicit) => explicit.clone(),
             None if self.registries.len() == 1 => registry.default_report_dir(),
-            None => registry
-                .default_report_dir()
-                .join(registry.year.to_string()),
+            None => scoped(registry.default_report_dir()),
         }
     }
 
-    /// Describe the plan for the selected year, along with every registered year.
+    /// Describe the plan for the selected year, along with every registered
+    /// year. With `--year all`, `plans` holds one plan per covered year, each
+    /// with the `requested_days` that year was narrowed to.
     pub fn describe(&self, options: &Options) -> Result<serde_json::Value, Error> {
-        let mut description = self.registry(options.year)?.describe(options)?;
+        if !options.all_years() {
+            let mut description = self.registry(options.event_year())?.describe(options)?;
 
-        description["years"] = serde_json::json!(self.years());
-        Ok(description)
+            description["years"] = serde_json::json!(self.years());
+            return Ok(description);
+        }
+
+        let mut plans = Vec::new();
+        for (registry, narrowed) in self.scopes(options)? {
+            let mut plan = registry.describe(&narrowed)?;
+
+            plan["years"] = serde_json::json!(self.years());
+            plan["requested_days"] = serde_json::json!(narrowed.days());
+            plans.push(plan);
+        }
+
+        Ok(serde_json::json!({
+            "protocol": 1, "protocols": PROTOCOLS, "runtime_version": RUNTIME_VERSION,
+            "capabilities": CAPABILITIES, "action": options.action.name(),
+            "years": self.years(), "plans": plans,
+        }))
     }
 
     /// The runtime's capabilities and registered years, without planning.
@@ -264,7 +339,7 @@ impl Events {
 
 /// Features the describe protocol advertises to the CLI. When adding one, add
 /// it with this crate's next release to the CLI's `compat::CAPABILITIES`.
-const CAPABILITIES: [&str; 3] = ["input-plan-v1", "profiling-v1", "years-v1"];
+const CAPABILITIES: [&str; 4] = ["input-plan-v1", "profiling-v1", "years-v1", "select-all-v1"];
 
 /// Describe protocols this runtime answers, oldest first. Keep an old protocol
 /// while published CLIs still request it.
@@ -440,6 +515,18 @@ pub enum Action {
     Profile,
 }
 
+impl Action {
+    /// The action's command name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Run => "run",
+            Self::List => "list",
+            Self::Bench => "bench",
+            Self::Profile => "profile",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 pub enum ProfileFamily {
     Generator,
@@ -475,29 +562,26 @@ impl ProfileFamily {
 pub struct Options {
     #[arg(value_enum, default_value = "run")]
     pub action: Action,
-    /// Select a registered event year; defaults to the only registered year or
-    /// aoc_lib!'s default_year. Without it, list shows every registered year.
-    #[arg(long, value_parser = parse_year)]
-    pub year: Option<u16>,
-    /// Select days (comma-separated or repeated); run, bench, and profile default to the latest registered day.
-    #[arg(short = 'd', long, value_delimiter = ',', value_parser = parse_day)]
-    pub day: Vec<u8>,
-    /// Select every registered day instead of the latest day.
-    #[arg(long, conflicts_with = "day")]
-    pub all_days: bool,
+    /// Select a registered event year, or `all` for every registered year;
+    /// defaults to the only registered year or aoc_lib!'s default_year.
+    /// Without it, list shows every registered year.
+    #[arg(long, value_name = "YEAR|all", value_parser = parse_year_selector)]
+    pub year: Option<Selector<u16>>,
+    /// Select days (comma-separated or repeated), or `all` for every registered day; run, bench, and profile default to the latest registered day.
+    #[arg(short = 'd', long, value_name = "DAYS|all", value_delimiter = ',', value_parser = parse_day_selector)]
+    pub day: Vec<Selector<u8>>,
     #[arg(short = 'p', long, requires = "day", value_parser = parse_part)]
     pub part: Option<u8>,
-    #[arg(long, requires_all = ["day", "part"], conflicts_with = "all_solutions")]
-    pub solution: Option<String>,
-    /// Run every variant and fail if displayed answers disagree for any day/part.
-    #[arg(long)]
-    pub all_solutions: bool,
+    /// Select a named solution (requires --day and --part), or `all` for every
+    /// variant; `run --solution all` fails if displayed answers disagree.
+    #[arg(long, value_name = "NAME|all", value_parser = parse_solution_selector)]
+    pub solution: Option<Selector<String>>,
     /// Run output format; JSON preserves answer text and uses integer nanoseconds.
     #[arg(long, value_enum, default_value = "human")]
     pub format: RunFormat,
     #[arg(long, hide = true)]
     pub run_report: Option<PathBuf>,
-    #[arg(short = 'i', long, requires = "day", conflicts_with = "all_days")]
+    #[arg(short = 'i', long, requires = "day")]
     pub input: Option<PathBuf>,
     /// Regex narrowing the selected benchmark or profiling families by workload name.
     #[arg(long)]
@@ -544,10 +628,8 @@ impl Default for Options {
             action: Action::Run,
             year: None,
             day: Vec::new(),
-            all_days: false,
             part: None,
             solution: None,
-            all_solutions: false,
             format: RunFormat::Human,
             run_report: None,
             input: None,
@@ -567,6 +649,130 @@ impl Default for Options {
             report_dir: None,
         }
     }
+}
+
+impl Options {
+    /// Parse runtime arguments and check how selections combine.
+    pub fn try_from_args<I, T>(args: I) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        let options = Self::try_parse_from(args)?;
+        let error = |kind, message: &str| Err(Self::command().error(kind, message));
+
+        if options.all_days() && options.day.len() > 1 {
+            return error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "--day all cannot be combined with specific days",
+            );
+        }
+        if options.solution_name().is_some() && options.part.is_none() {
+            return error(
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "--solution <NAME> requires --day and --part; use --solution all to select every variant",
+            );
+        }
+        if options.input.is_some() && options.all_days() {
+            return error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "--input requires exactly one selected day",
+            );
+        }
+        if options.input.is_some() && options.all_years() {
+            return error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "--input cannot be combined with --year all",
+            );
+        }
+
+        Ok(options)
+    }
+
+    /// The specific year requested with `--year`, if any.
+    pub fn event_year(&self) -> Option<u16> {
+        match self.year {
+            Some(Selector::One(year)) => Some(year),
+            _ => None,
+        }
+    }
+
+    /// Whether `--year all` selects every registered year.
+    pub fn all_years(&self) -> bool {
+        self.year == Some(Selector::All)
+    }
+
+    /// The specific days requested with `--day`.
+    pub fn days(&self) -> Vec<u8> {
+        self.day
+            .iter()
+            .filter_map(|day| match day {
+                Selector::One(day) => Some(*day),
+                Selector::All => None,
+            })
+            .collect()
+    }
+
+    /// Whether `--day all` selects every registered day.
+    pub fn all_days(&self) -> bool {
+        self.day.contains(&Selector::All)
+    }
+
+    /// The solution named with `--solution`, if any.
+    pub fn solution_name(&self) -> Option<&str> {
+        match &self.solution {
+            Some(Selector::One(name)) => Some(name),
+            _ => None,
+        }
+    }
+
+    /// Whether `--solution all` selects every variant.
+    pub fn all_solutions(&self) -> bool {
+        self.solution == Some(Selector::All)
+    }
+}
+
+/// A `--year`, `--day`, or `--solution` value: `all`, or one specific value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Selector<T> {
+    /// Every registered year, day, or variant.
+    All,
+    /// One event year, day, or solution name.
+    One(T),
+}
+
+impl<T> From<T> for Selector<T> {
+    fn from(value: T) -> Self {
+        Self::One(value)
+    }
+}
+
+fn all_or<T>(
+    value: &str,
+    parse: impl FnOnce(&str) -> Result<T, String>,
+) -> Result<Selector<T>, String> {
+    if value == "all" {
+        return Ok(Selector::All);
+    }
+
+    parse(value)
+        .map(Selector::One)
+        .map_err(|error| format!("{error}, or all"))
+}
+
+/// Parse an event year or `all`.
+pub fn parse_year_selector(value: &str) -> Result<Selector<u16>, String> {
+    all_or(value, parse_year)
+}
+
+/// Parse a day selector or `all`.
+pub fn parse_day_selector(value: &str) -> Result<Selector<u8>, String> {
+    all_or(value, parse_day)
+}
+
+/// Parse a solution name or `all`.
+pub fn parse_solution_selector(value: &str) -> Result<Selector<String>, String> {
+    all_or(value, |name| Ok(name.to_owned()))
 }
 
 /// Parse an Advent of Code event year, 2015 or later.
@@ -792,9 +998,9 @@ pub fn profile_seconds(value: &str) -> Result<f64, String> {
 
 impl Registry {
     fn selected_days(&self, options: &Options) -> Vec<u8> {
-        let mut days = options.day.clone();
+        let mut days = options.days();
         if days.is_empty()
-            && !options.all_days
+            && !options.all_days()
             && matches!(
                 options.action,
                 Action::Run | Action::Bench | Action::Profile
@@ -820,7 +1026,7 @@ impl Registry {
             .filter(|s| {
                 (days.is_empty() || days.contains(&s.day))
                     && options.part.is_none_or(|p| s.part == p)
-                    && options.solution.as_ref().is_none_or(|n| s.name == n)
+                    && options.solution_name().is_none_or(|n| s.name == n)
             })
             .collect();
         candidates.sort_by_key(|s| (s.day, s.part, s.name));
@@ -834,7 +1040,7 @@ impl Registry {
             ));
         }
 
-        if !variants && !options.all_solutions && options.solution.is_none() {
+        if !variants && options.solution.is_none() {
             let mut groups: BTreeMap<(u8, u8), Vec<&Solution>> = BTreeMap::new();
             for s in candidates {
                 groups.entry((s.day, s.part)).or_default().push(s);
@@ -893,7 +1099,6 @@ impl Registry {
         let selected = self.select(options, true)?;
         let defaults_options = Options {
             solution: None,
-            all_solutions: false,
             ..options.clone()
         };
         let defaults = self.select(&defaults_options, false)?;
@@ -944,7 +1149,6 @@ impl Registry {
         // Full-run benches always follow the runner's default selection within the scope.
         let defaults_options = Options {
             solution: None,
-            all_solutions: false,
             ..options.clone()
         };
         let defaults = self.select(&defaults_options, false)?;
@@ -959,8 +1163,7 @@ impl Registry {
             .filter(|g| {
                 options.part.is_none_or(|p| g.part == 0 || g.part == p)
                     && options
-                        .solution
-                        .as_ref()
+                        .solution_name()
                         .is_none_or(|n| g.name == "default" || g.name == n)
                     && required.iter().any(|s| s.day == g.day)
             })
@@ -1027,9 +1230,7 @@ impl Registry {
         Ok(serde_json::json!({
             "protocol": 1, "protocols": PROTOCOLS, "runtime_version": RUNTIME_VERSION,
             "capabilities": CAPABILITIES, "year": self.year, "years": [self.year],
-            "manifest_dir": self.manifest_dir, "action": match options.action {
-                Action::Run => "run", Action::Bench => "bench", Action::List => "list", Action::Profile => "profile",
-            },
+            "manifest_dir": self.manifest_dir, "action": options.action.name(),
             "selection": plan.selected.iter().map(identity).collect::<Vec<_>>(),
             "defaults": plan.defaults.iter().map(identity).collect::<Vec<_>>(),
             "required_input_days": days,
@@ -1211,7 +1412,7 @@ impl Registry {
         if let Some(part) = options.part {
             scope.push_str(&format!(" part {part}"));
         }
-        if let Some(name) = &options.solution {
+        if let Some(name) = options.solution_name() {
             scope.push_str(&format!(" [{name}]"));
         }
         scope
@@ -1236,7 +1437,7 @@ pub fn entry(events: Events) -> i32 {
             return 0;
         }
 
-        let options = match Options::try_parse_from(args) {
+        let options = match Options::try_from_args(args) {
             Ok(options) => options,
             Err(error) => {
                 let _ = error.print();
@@ -1255,7 +1456,7 @@ pub fn entry(events: Events) -> i32 {
         };
     }
 
-    let options = Options::parse_from(&args);
+    let options = Options::try_from_args(&args).unwrap_or_else(|error| error.exit());
     if matches!(options.action, Action::Run)
         && options.format == RunFormat::Json
         && options.run_report.is_none()
@@ -1276,7 +1477,7 @@ pub fn entry(events: Events) -> i32 {
     };
     let result = result.and_then(|()| match options.action {
         Action::List => events.list(&options),
-        Action::Run => events.registry(options.year)?.run(&options),
+        Action::Run => events.run(&options),
         Action::Bench | Action::Profile => events.bench(&options),
     });
     let result = result.and_then(|()| {
@@ -1341,9 +1542,33 @@ mod tests {
 
             let options = Options::try_parse_from(args).unwrap();
 
-            assert_eq!(options.day, *expected);
-            assert!(!options.all_days);
+            assert_eq!(options.days(), *expected);
+            assert!(!options.all_days());
         }
+    }
+
+    #[test]
+    fn all_selects_every_year_day_or_variant() {
+        let parse = |args: &[&str]| {
+            Options::try_from_args(std::iter::once("aoc-harness").chain(args.iter().copied()))
+                .unwrap()
+        };
+
+        let everything = parse(&["run", "--year", "all", "--day", "all", "--solution", "all"]);
+        let part = parse(&["bench", "-d", "all", "-p", "2"]);
+        let named = parse(&["run", "-d", "4", "-p", "1", "--solution", "fast"]);
+        let specific = parse(&["run", "--year", "2019", "--day", "4"]);
+
+        assert!(everything.all_years() && everything.all_days() && everything.all_solutions());
+        assert_eq!(everything.event_year(), None);
+        assert!(everything.days().is_empty());
+        assert_eq!(everything.solution_name(), None);
+        assert!(part.all_days());
+        assert_eq!(part.part, Some(2));
+        assert_eq!(named.solution_name(), Some("fast"));
+        assert!(!named.all_solutions());
+        assert_eq!(specific.event_year(), Some(2019));
+        assert!(!specific.all_years() && !specific.all_days());
     }
 
     #[test]
@@ -1352,14 +1577,20 @@ mod tests {
             &["run", "--days", "1,4"],
             &["run", "--day", "0"],
             &["run", "--day", "1,26"],
-            &["run", "--day", "1,4", "--all-days"],
-            &["run", "--all-days", "--input", "input.txt"],
+            &["run", "--day", "1,all"],
+            &["run", "--day", "all", "--day", "4"],
+            &["run", "--all-days"],
+            &["run", "--all-solutions"],
+            &["run", "--day", "all", "--input", "input.txt"],
+            &["run", "--year", "all", "--day", "1", "--input", "input.txt"],
+            &["run", "--year", "everything"],
+            &["run", "--day", "1", "--solution", "variant"],
         ];
 
         for args in cases {
             let input = std::iter::once("aoc-harness").chain(args.iter().copied());
 
-            let result = Options::try_parse_from(input);
+            let result = Options::try_from_args(input);
 
             assert!(result.is_err(), "unexpectedly accepted {args:?}");
         }
@@ -1408,9 +1639,9 @@ mod plan_tests {
         let run = Options::default();
         let bench = Options {
             action: Action::Bench,
-            day: vec![2],
+            day: vec![Selector::One(2)],
             part: Some(1),
-            solution: Some("variant".into()),
+            solution: Some(Selector::One("variant".into())),
             ..Default::default()
         };
 
@@ -1436,7 +1667,7 @@ mod plan_tests {
             .is_err());
         assert!(registry
             .describe(&Options {
-                day: vec![25],
+                day: vec![Selector::One(25)],
                 ..run
             })
             .is_err());
@@ -1459,20 +1690,20 @@ mod plan_tests {
         let latest = registry.describe(&options).unwrap();
         let filtered = registry
             .describe(&Options {
-                all_days: true,
+                day: vec![Selector::All],
                 filter: Some("day1/".into()),
                 ..options.clone()
             })
             .unwrap();
         let multiple = registry
             .describe(&Options {
-                all_days: true,
+                day: vec![Selector::All],
                 ..options.clone()
             })
             .unwrap();
         let full = registry
             .describe(&Options {
-                all_days: true,
+                day: vec![Selector::All],
                 family: vec![ProfileFamily::FullRun],
                 ..options
             })
@@ -1636,7 +1867,7 @@ mod events_tests {
         for action in ["run", "list", "bench", "profile"] {
             let parsed = options(&[action, "--year", "2019"]);
 
-            assert_eq!(parsed.year, Some(2019));
+            assert_eq!(parsed.year, Some(Selector::One(2019)));
         }
         for year in ["2014", "0", "twenty", "-1", "65536"] {
             let result = Options::try_parse_from(["aoc-harness", "run", "--year", year]);
@@ -1731,7 +1962,7 @@ mod events_tests {
         };
         let report_dir = |events: &Events, args: &[&str]| {
             let options = options(args);
-            let registry = events.registry(options.year).unwrap();
+            let registry = events.registry(options.event_year()).unwrap();
 
             events.report_dir(registry, &options)
         };
@@ -1788,6 +2019,82 @@ mod events_tests {
         assert_eq!(listing.len(), 3);
         assert!(listing[0].starts_with("2019 day 1 "));
         assert!(listing[2].starts_with("2025 day 2 "));
+    }
+
+    #[test]
+    fn year_all_covers_each_year_with_its_own_days() {
+        let defaulted = events(Some(2025));
+        let years = |args: &[&str]| -> Vec<(u16, Vec<u8>)> {
+            defaulted
+                .scopes(&options(args))
+                .unwrap()
+                .into_iter()
+                .map(|(registry, options)| {
+                    let days = registry
+                        .select(&options, false)
+                        .unwrap()
+                        .iter()
+                        .map(|s| s.day)
+                        .collect();
+                    (registry.year, days)
+                })
+                .collect()
+        };
+
+        let latest = years(&["run", "--year", "all"]);
+        let every = years(&["run", "--year", "all", "--day", "all"]);
+        let narrowed = years(&["bench", "--year", "all", "--day", "2"]);
+        let default = years(&["run"]);
+        let listed = years(&["list", "--year", "all"]);
+
+        assert_eq!(latest, [(2019, vec![1]), (2025, vec![2])]);
+        assert_eq!(every, [(2019, vec![1]), (2025, vec![1, 2])]);
+        assert_eq!(narrowed, [(2025, vec![2])]);
+        assert_eq!(default, [(2025, vec![2])]);
+        assert_eq!(listed, every);
+        assert!(defaulted
+            .scopes(&options(&["run", "--year", "all", "--day", "3"]))
+            .is_err());
+    }
+
+    #[test]
+    fn describe_with_year_all_returns_one_plan_per_covered_year() {
+        let ambiguous = events(None);
+
+        let description = ambiguous
+            .describe(&options(&["run", "--year", "all", "--day", "1,2"]))
+            .unwrap();
+        let plans = description["plans"].as_array().unwrap();
+
+        assert_eq!(description["action"], "run");
+        assert_eq!(description["years"], serde_json::json!([2019, 2025]));
+        assert!(description["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("select-all-v1")));
+        assert_eq!(plans.len(), 2);
+        assert_eq!(plans[0]["year"], 2019);
+        assert_eq!(plans[0]["requested_days"], serde_json::json!([1]));
+        assert_eq!(plans[0]["required_input_days"], serde_json::json!([1]));
+        assert_eq!(plans[1]["year"], 2025);
+        assert_eq!(plans[1]["requested_days"], serde_json::json!([1, 2]));
+        assert_eq!(plans[1]["required_input_days"], serde_json::json!([1, 2]));
+    }
+
+    #[test]
+    fn year_all_scopes_an_explicit_report_directory_by_year() {
+        let multi = events(Some(2025));
+        let single = Events {
+            default_year: Some(2025),
+            registries: &REGISTRIES[..1],
+        };
+        let all = options(&["bench", "--year", "all", "--report-dir", "/given"]);
+
+        let older = multi.report_dir(multi.registry(Some(2019)).unwrap(), &all);
+        let only = single.report_dir(single.registry(Some(2025)).unwrap(), &all);
+
+        assert_eq!(older, Path::new("/given/2019"));
+        assert_eq!(only, Path::new("/given"));
     }
 }
 

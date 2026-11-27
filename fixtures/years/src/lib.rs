@@ -33,9 +33,9 @@ mod tests {
     fn answer(year: u16, day: u8, part: u8, name: &str, raw: &str) -> String {
         let registry = __aoc_events().registry(Some(year)).unwrap();
         let options = Options {
-            day: vec![day],
+            day: vec![day.into()],
             part: Some(part),
-            solution: Some(name.into()),
+            solution: Some(name.to_owned().into()),
             ..Default::default()
         };
         let selected = registry.select(&options, false).unwrap();

@@ -16,7 +16,7 @@ project's `Cargo.toml`:
 
 ```toml
 [dependencies]
-aoc-harness = "0.5.1"
+aoc-harness = "0.6.0"
 ```
 
 It provides the runtime and re-exports `aoc`, `aoc_generator`, `aoc_lib`, and
@@ -31,27 +31,33 @@ it uses, and a fix, such as `cargo add aoc-harness@0.5.0 --manifest-path <path>`
 for a crates.io dependency. If the runtime needs a newer CLI, or supports
 features this CLI doesn't recognize, the CLI asks you to run
 `cargo install aoc-harness-cli --locked`. Upgrade the CLI when you move
-`aoc-harness` across a 0.x release.
+`aoc-harness` across a 0.x release. Runtimes before 0.6.0 receive `--day all`
+and `--solution all` as `--all-days` and `--all-solutions`; `--year all`, and
+`--day all` with `--part`, need 0.6.0.
 
 Run `cargo aoc-harness --help` for commands. Downloads happen only when requested
 with `input` or `--download`. They share the user-managed
 `$HOME/.adventofcode.session` raw token file with aoc-cli. Personal input files
-should stay out of Git. `input -d 1` and `input --all` use the selected package's
+should stay out of Git. `input -d 1` and `input --day all` use the selected package's
 `aoc_lib!` year, even when downloading in a later calendar year, without compiling
 unfinished solvers.
 
 A crate that registers several events with `aoc_lib! { years = { 2019 => y2019,
 2025 => y2025 }, default_year = 2025 }` selects one with `--year` on `run`
 (including plain `cargo aoc-harness`), `list`, `bench`, `profile`, `input`, and
-`generate`. Without it, commands use the only registered year or `default_year`;
+`generate`, and every event with `--year all` on all of them except `generate`.
+Without it, commands use the only registered year or `default_year`;
 with several years and no default, they list the registered years and ask for
 one. The wall clock never picks the year. Plain `list` shows every year, and
 `list --year` narrows it. `--year` must name a registered year, including in
 single-year crates, where it must match the declared year. An unknown year is
 rejected before credentials are read, inputs are downloaded, or source files
 are written. `--year` requires an `aoc-harness` 0.5.0 or later runtime; with an
-older one, the CLI names the upgrade. `input --year 2019 --all` downloads only
-that event's released days. The
+older one, the CLI names the upgrade. `input --year 2019 --day all` downloads only
+that event's released days. `--year all` covers each registered year in order
+and keeps the usual day default, so `run --year all --day all` runs everything;
+years that don't register a requested day are skipped. It requires an
+`aoc-harness` 0.6.0 or later runtime. The
 [migration guide](https://github.com/pedantic79/aoc-harness/blob/main/docs/multi-year-migration.md)
 covers combining per-year crates, including an `add-day` recipe that takes a
 year.
@@ -105,17 +111,20 @@ See [Custom day templates](https://github.com/pedantic79/aoc-harness#custom-day-
 for a complete example.
 
 Select multiple days with `--day 1,3` or `--day 1 --day 3`; `-d` is the short form
-of `--day`. Use `--all-days` to select every registered day for `run`, `list`,
-`bench`, or `profile`.
+of `--day`. Use `--day all` to select every registered day for `run`, `list`,
+`bench`, or `profile`, or every released day for `input`.
 
 Select a part with `--part 1` or `-p 1`, for example
 `cargo aoc-harness run -d 1 -p 2`. Workspace package selection uses `--package`.
 
-Use `run --all-solutions` to compare all variants' displayed answers by day and
-part. Any disagreement, including whitespace or line breaks, makes the command
-fail after completing the selection. `run --format json` emits one report with
-the event year, ordered results, string answers, integer nanosecond timings,
-outcome, partial failures, and disagreements. Build, download, and solution
+`--solution NAME` selects one variant and needs `--day` and `--part`;
+`--solution all` selects every variant. Use `run --solution all` to compare all
+variants' displayed answers by day and part. Any disagreement, including
+whitespace or line breaks, makes the command fail after completing the selection.
+`run --format json` emits one object with the overall outcome and a `years`
+array of per-year reports, each with the event year, ordered results, string
+answers, integer nanosecond timings, outcome, partial failures, and
+disagreements. Build, download, and solution
 output goes to stderr so stdout is directly parseable. Plain `run` keeps its
 human-readable output.
 

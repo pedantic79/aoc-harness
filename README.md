@@ -45,7 +45,7 @@ macros through `aoc_harness` in your solution code.
 
 ```toml
 [dependencies]
-aoc-harness = "0.5.1"
+aoc-harness = "0.6.0"
 ```
 
 Replace `src/lib.rs` with your day modules and event year:
@@ -144,7 +144,7 @@ with `chmod 600 "$HOME/.adventofcode.session"`.
 ```sh
 cargo aoc-harness credentials status
 cargo aoc-harness input --day 1
-cargo aoc-harness input --all
+cargo aoc-harness input --day all
 ```
 
 `credentials status` validates the local token format without printing the token
@@ -157,9 +157,9 @@ project's `Cargo.toml`. Existing inputs are preserved. `input` downloads without
 compiling your solutions, so it also works while a solver is unfinished. The event
 year always comes from the selected package's `aoc_lib!` declaration, including
 expressions such as `year = EVENT_YEAR`. An unresolved year reports the package
-and library source before credentials or downloads are attempted. `--all` uses
-that event's released days; omitting `--day` selects today's day only during that
-event's December release window. Keep personal inputs out of Git.
+and library source before credentials or downloads are attempted. `--day all`
+uses that event's released days; omitting `--day` selects today's day only during
+that event's December release window. Keep personal inputs out of Git.
 
 `--year YEAR` selects one of the years that `aoc_lib!` registers; it never
 relabels another year's inputs. In a single-year crate it must match the declared
@@ -203,9 +203,9 @@ Run these commands from your solution project:
 cargo aoc-harness run
 cargo aoc-harness run --day 1
 cargo aoc-harness run --day 1 --part 2 --solution sorted
-cargo aoc-harness run --day 1 --all-solutions
-cargo aoc-harness run --all-days
-cargo aoc-harness run --all-days --format json
+cargo aoc-harness run --day 1 --solution all
+cargo aoc-harness run --day all
+cargo aoc-harness run --day all --format json
 cargo aoc-harness list
 ```
 
@@ -215,9 +215,9 @@ rules. Human-readable and JSON reports name the event year.
 
 `run` and `bench` build in release mode by default; `list` shows every registered
 day and marks default implementations. As you add days, use `--day 1,3` or repeat
-the flag with `--day 1 --day 3` to select several at once. `-d` is the short form
-of `--day`. Use `--input PATH` with a single `--day` to try an alternate input
-file.
+the flag with `--day 1 --day 3` to select several at once, or `--day all` to
+select every registered day. `-d` is the short form of `--day`. Use
+`--input PATH` with a single `--day` to try an alternate input file.
 
 Use `--part 1` or `-p 1` to select a part, for example
 `cargo aoc-harness run -d 1 -p 2`. Workspace package selection uses `--package`.
@@ -245,7 +245,7 @@ Full run (2025 day 1, 2 selected):
 selected pass, including parsing and cleanup. Compilation, input file I/O, and
 answer printing happen outside that interval.
 
-`--all-solutions` compares the displayed answers of every completed variant for
+`--solution all` compares the displayed answers of every completed variant for
 each day and part, including the default. Whitespace and line breaks must match
 exactly. A disagreement prints each variant's answer and causes a nonzero exit
 status after all selected implementations finish. Generator and solver failures
@@ -256,7 +256,12 @@ not establish correctness; keep tests for known answers.
 progress, and anything printed by solution code go to stderr. The default
 `--format human` keeps the terminal report. Answers are formatted once after the
 full-run timer stops, and JSON preserves them as strings, including numeric,
-negative, and multiline answers. Results are ordered by day, part, and variant.
+negative, and multiline answers. The object has an overall `outcome` and a
+`years` array with one report per event year: one entry, or one per year with
+`--year all`. Each report has its `year`, `outcome`, `results`, `totals`,
+`failure`, and `disagreements`. Results are ordered by day, part, and variant.
+Runtimes before `aoc-harness` 0.6.0 write a single report without the `years`
+wrapper.
 
 The report has `year`, `outcome` (`success`, `disagreement`, or `failed`),
 `results`, `totals`, `failure`, and `disagreements`. Each result contains `day`,
@@ -369,9 +374,9 @@ require no extra dependencies or benchmark targets in your solution project.
 cargo aoc-harness bench
 cargo aoc-harness bench --day 1 --open
 cargo aoc-harness bench --day 1 --part 2 --solution sorted
-cargo aoc-harness bench --all-days
+cargo aoc-harness bench --day all
 cargo aoc-harness bench --day 1 --family generator,solver
-cargo aoc-harness bench --all-days --family full-run
+cargo aoc-harness bench --day all --family full-run
 ```
 
 Benchmarks default to the `solver` family. Use `--family` to select any combination
@@ -433,12 +438,14 @@ cargo install --locked samply
 cargo aoc-harness profile --day 1 --part 2
 cargo aoc-harness profile --day 1 --part 2 --family solver --duration 30
 cargo aoc-harness profile --day 1 --family generator,solver
-cargo aoc-harness profile --all-days --family full-run
+cargo aoc-harness profile --day all --family full-run
 ```
 
 Profiling defaults to Samply and approximately 10 seconds of end-to-end work.
 Select workloads with `--day`, `--part`, and optionally `--solution`, or
-choose `--family full-run` for a complete pass. Debug symbols are enabled
+choose `--family full-run` for a complete pass. Profiling uses default
+implementations unless `--solution` names one, or `--solution all` selects every
+variant. Debug symbols are enabled
 automatically while preserving the selected Cargo profile's optimization.
 
 Use `--profiler flamegraph`, `--profiler perf` on Linux, or `--profiler xctrace`
@@ -521,17 +528,23 @@ optional. Duplicate years, a `default_year` that isn't in `years`, and a
 registration outside every mapped module are compile errors.
 
 Select an event with `--year` on `run`, `list`, `bench`, `profile`, `input`, and
-`generate`:
+`generate`, or every event with `--year all` on all of them except `generate`:
 
 ```sh
 cargo aoc-harness run --year 2019 --day 1
-cargo aoc-harness input --year 2019 --all
+cargo aoc-harness input --year 2019 --day all
 cargo aoc-harness generate --year 2019 --day 2
+cargo aoc-harness run --year all --day all
 ```
 
 Without `--year`, commands use the only registered year or `default_year`; with
 several years and no default, they list the registered years and ask for one.
 Plain `list` shows every year, ordered by year, and `list --year` narrows it.
+`--year all` covers each registered year in order, keeping the usual day
+default: `run --year all` runs each year's latest day, and `--day all` adds the
+rest. Years that don't register a requested day are skipped; a day that no year
+registers is an error. `input --year all` also skips years where no selected day
+has been released.
 An unregistered year is rejected before credentials, downloads, or source
 writes. `generate --year 2019` writes `src/y2019/day02.rs`, declares it in the
 `y2019` module (`src/y2019/mod.rs` or `src/y2019.rs`), and follows that
@@ -550,10 +563,11 @@ Each year keeps its own benchmark reports, baselines, and profiles under a
 same command for 2025 never overwrite each other, and `--baseline before` only
 finds the selected year's measurements. Benchmark names are unchanged.
 Single-year crates keep their existing paths and saved baselines. An explicit
-profile `--output` path is used as given, so choose a distinct path per year.
+profile `--output` path is used as given, so choose a distinct path per year;
+with `--year all`, it names a directory that gets one subdirectory per year.
 
-`--year` needs an `aoc-harness` runtime of 0.5.0 or later; with an older
-runtime, the CLI stops before passing the flag through and
+`--year` needs an `aoc-harness` runtime of 0.5.0 or later, and `--year all` needs
+0.6.0 or later; with an older runtime, the CLI stops before passing the flag through and
 [names the upgrade](#keeping-the-cli-and-runtime-in-sync). Standalone
 binaries using `aoc_main! { year = ... }` support one event year; map several
 years in a library with `aoc_lib!` and run it with `aoc_main! { lib = ... }`.
@@ -666,7 +680,10 @@ runtime what it supports and says which side to upgrade:
   doesn't recognize, commands still run and print a note. Either way, run
   `cargo install aoc-harness-cli --locked` to get the latest CLI.
 
-When you upgrade `aoc-harness` across a 0.x release, upgrade the CLI too.
+Runtimes before `aoc-harness` 0.6.0 spell `--day all` and `--solution all` as
+`--all-days` and `--all-solutions`; the CLI translates for them, except for
+`--day all` with `--part`, which needs 0.6.0. When you upgrade `aoc-harness`
+across a 0.x release, upgrade the CLI too.
 
 ## Further documentation
 

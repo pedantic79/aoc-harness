@@ -1,8 +1,8 @@
-# Check variant agreement with `run --all-solutions`
+# Check variant agreement with `run --solution all`
 
 Implemented.
 
-`cargo aoc-harness run --all-solutions` will automatically check whether the
+`cargo aoc-harness run --solution all` will automatically check whether the
 selected implementations of each puzzle part give the same answer. The existing
 flag already runs each variant against the same raw input and prints its answer
 and timings. Today the command can succeed when those answers differ.
@@ -27,8 +27,8 @@ The [library fixture](../../fixtures/library/src/lib.rs) has two useful cases:
 
 | Run from the fixture | Expected outcome |
 | --- | --- |
-| `cargo aoc-harness run -d 1 -p 1 --all-solutions` | Both variants return `6`. The command succeeds. |
-| `cargo aoc-harness run -d 1 -p 2 --all-solutions` | The unnamed, `mutable`, and `owned` variants return `12`, `306`, and `12`. The command reports the disagreement and exits unsuccessfully. |
+| `cargo aoc-harness run -d 1 -p 1 --solution all` | Both variants return `6`. The command succeeds. |
+| `cargo aoc-harness run -d 1 -p 2 --solution all` | The unnamed, `mutable`, and `owned` variants return `12`, `306`, and `12`. The command reports the disagreement and exits unsuccessfully. |
 
 The comparison also works on an alternate input supplied with `--input`.
 Consumer regression tests remain the place to record known answers. Those tests
@@ -36,6 +36,6 @@ can catch a shared bug even when every variant returns the same wrong answer.
 
 ## Compatibility
 
-Scripts that use `run --all-solutions` will receive a failure status for a
+Scripts that use `run --solution all` will receive a failure status for a
 disagreement that previously produced a successful exit. Treat this as a breaking
 change to the documented CLI behavior when preparing the release.

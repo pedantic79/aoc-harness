@@ -352,7 +352,7 @@ mod tests {
     fn solutions_select_generators_by_registration_name() {
         let registry = __aoc_registry();
         let options = aoc_harness::Options {
-            day: vec![22],
+            day: vec![22.into()],
             ..Default::default()
         };
 
@@ -383,7 +383,7 @@ mod tests {
     fn stacked_generator_attributes_share_one_function() {
         let registry = __aoc_registry();
         let options = aoc_harness::Options {
-            day: vec![25],
+            day: vec![25.into()],
             ..Default::default()
         };
 
@@ -411,7 +411,7 @@ mod tests {
     fn generators_rank_name_over_part_over_day() {
         let registry = __aoc_registry();
         let options = aoc_harness::Options {
-            day: vec![24],
+            day: vec![24.into()],
             ..Default::default()
         };
 
@@ -448,7 +448,7 @@ mod tests {
     fn imported_result_alias_and_borrowed_parsed_values_work() {
         let registry = __aoc_registry();
         let options = aoc_harness::Options {
-            day: vec![23],
+            day: vec![23.into()],
             ..Default::default()
         };
         let selected = registry.select(&options, false).unwrap();
@@ -464,7 +464,7 @@ mod tests {
     fn typed_preparation_and_timings_include_each_generation_and_cleanup() {
         let registry = __aoc_registry();
         let options = aoc_harness::Options {
-            day: vec![20],
+            day: vec![20.into()],
             ..Default::default()
         };
         let selected = registry.select(&options, false).unwrap();

@@ -10,6 +10,20 @@ answers from unnamed implementations.
 
 ## Report contents
 
+The report wraps one report per event year:
+
+```json
+{ "outcome": "success", "years": [ { "year": 2025, "outcome": "success", "results": [], "totals": {}, "failure": null, "disagreements": [] } ] }
+```
+
+A single-year run reports that year alone in `years`; `--year all` reports each
+covered year in ascending order. The top-level `outcome` is `failed` when any year
+failed, otherwise `disagreement` when any year disagreed, otherwise `success`. A
+failed solution stops the run, so later years are absent; a disagreement does not.
+Runtimes before `aoc-harness` 0.6.0 emit the single-year report without the wrapper.
+
+Each year's report:
+
 - Include the event year and an ordered result for each completed implementation.
   Each result identifies the day, part, and variant and includes the displayed
   answer as a string. Preserve whitespace and line breaks, including in answers
@@ -18,7 +32,7 @@ answers from unnamed implementations.
   nanoseconds. Format answers and serialize the report after the full-run timer
   stops.
 - Include the run outcome. On a generator or solver error, report the completed
-  results and identify the failed implementation and phase. With `--all-solutions`,
+  results and identify the failed implementation and phase. With `--solution all`,
   include any [variant disagreements](variant-agreement.md). The exit status follows
   the same rules as the human-readable run.
 - Keep build messages, download progress, and output printed by solution code

@@ -127,8 +127,8 @@ mod tests {
         let selected = registry
             .select(
                 &Options {
-                    day: vec![1],
-                    all_solutions: true,
+                    day: vec![1.into()],
+                    solution: Some(aoc_harness::Selector::All),
                     ..Default::default()
                 },
                 false,
@@ -145,7 +145,7 @@ mod tests {
             let selected = registry
                 .select(
                     &Options {
-                        day: vec![day],
+                        day: vec![day.into()],
                         ..Default::default()
                     },
                     false,
@@ -163,7 +163,7 @@ mod tests {
         let selected = registry
             .select(
                 &Options {
-                    day: vec![1],
+                    day: vec![1.into()],
                     part: Some(1),
                     ..Default::default()
                 },

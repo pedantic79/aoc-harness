@@ -111,7 +111,9 @@ fn years_share_identities_and_select_a_default() {
 
     let tests = consumer.cargo(&["test", "--lib", "--quiet"]);
     let bonus = consumer.cargo(&["test", "--lib", "--quiet", "--features", "bonus"]);
-    let listed = success(consumer.cargo(&["run", "--quiet", "--", "list", "--all-days"]));
+    let listed = success(consumer.cargo(&[
+        "run", "--quiet", "--", "list", "--year", "all", "--day", "all",
+    ]));
     let narrowed = success(consumer.cargo(&["run", "--quiet", "--", "list", "--year", "2025"]));
 
     success(tests);
@@ -136,6 +138,25 @@ fn years_share_identities_and_select_a_default() {
     );
     success(consumer.cargo(&["run", "--quiet", "--", "list"]));
     success(consumer.cargo(&["run", "--quiet", "--", "list", "--year", "2019"]));
+
+    // --year all needs no default year and reports each year's latest day.
+    let report = success(consumer.cargo(&[
+        "run", "--quiet", "--", "run", "--year", "all", "--format", "json",
+    ]));
+    let report: serde_json::Value = serde_json::from_str(&report).unwrap();
+    let years: Vec<_> = report["years"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|year| (year["year"].clone(), year["results"][0]["day"].clone()))
+        .collect();
+
+    assert_eq!(report["outcome"], "success", "{report}");
+    assert_eq!(
+        years,
+        [(2019.into(), 1.into()), (2025.into(), 2.into())],
+        "{report}"
+    );
 
     // One mapped year is the default, and input!(day) needs no year.
     consumer.write(

@@ -333,23 +333,47 @@ pub(crate) fn resolve(
     Ok(selection.year.expect("evaluated selections have a year"))
 }
 
+/// Every event year the library declares, in ascending order.
+pub(crate) fn years(project: &ConsumerProject, options: &BuildOptions) -> Result<Vec<u16>, String> {
+    let (parsed, declared) = read_declaration(project)?;
+
+    match declared {
+        Declared::Single(expression) => {
+            let year = evaluate(project, options, &parsed, &expression)
+                .map_err(|e| undetermined(project, e))?;
+            Ok(vec![year])
+        }
+        Declared::Multi { years, .. } => {
+            let mut years: Vec<_> = years.into_iter().map(|(year, _)| year).collect();
+            years.sort_unstable();
+            Ok(years)
+        }
+    }
+}
+
+fn undetermined(project: &ConsumerProject, error: String) -> String {
+    format!(
+        "cannot determine the aoc_lib! event year for package {:?} in {}: {error}",
+        project.package_name,
+        project.library_source.display()
+    )
+}
+
+fn read_declaration(project: &ConsumerProject) -> Result<(syn::File, Declared), String> {
+    let source = std::fs::read_to_string(&project.library_source)
+        .map_err(|e| undetermined(project, e.to_string()))?;
+
+    declared(&source).map_err(|e| undetermined(project, e))
+}
+
 fn select_with(
     project: &ConsumerProject,
     options: &BuildOptions,
     requested: Option<u16>,
     evaluate_single: bool,
 ) -> Result<Selection, String> {
-    let undetermined = |error: String| {
-        format!(
-            "cannot determine the aoc_lib! event year for package {:?} in {}: {error}",
-            project.package_name,
-            project.library_source.display()
-        )
-    };
-
-    let source = std::fs::read_to_string(&project.library_source)
-        .map_err(|e| undetermined(e.to_string()))?;
-    let (parsed, declared) = declared(&source).map_err(undetermined)?;
+    let undetermined = |error| undetermined(project, error);
+    let (parsed, declared) = read_declaration(project)?;
 
     match declared {
         Declared::Single(_) if requested.is_none() && !evaluate_single => Ok(Selection {

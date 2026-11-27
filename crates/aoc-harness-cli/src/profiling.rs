@@ -227,14 +227,14 @@ impl Backend {
         bridge: &Path,
         runtime: &[OsString],
         workloads: &[String],
+        directory: bool,
     ) -> Result<i32, String> {
-        let multiple = workloads.len() > 1;
+        // `--output` names a directory of workload recordings when there are
+        // several workloads, or when the caller records several years.
+        let multiple = directory || workloads.len() > 1;
         if multiple {
             if let Some(output) = &options.output {
-                std::fs::create_dir_all(output.parent().ok_or("profiling output has no parent")?)
-                    .map_err(|e| format!("create output parent: {e}"))?;
-                std::fs::create_dir(output)
-                    .map_err(|e| format!("create profiling output {}: {e}", output.display()))?;
+                create_output_directory(output)?;
             }
         }
 
@@ -362,6 +362,15 @@ impl Backend {
         }
         Ok(0)
     }
+}
+
+/// Create a new profiling output directory; an existing one is an error, so
+/// recordings never mix with older ones.
+pub(crate) fn create_output_directory(output: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(output.parent().ok_or("profiling output has no parent")?)
+        .map_err(|e| format!("create output parent: {e}"))?;
+    std::fs::create_dir(output)
+        .map_err(|e| format!("create profiling output {}: {e}", output.display()))
 }
 
 pub(crate) fn workloads(description: &[u8]) -> Result<Vec<String>, String> {
